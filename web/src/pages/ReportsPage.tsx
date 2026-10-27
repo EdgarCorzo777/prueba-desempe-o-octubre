@@ -13,11 +13,6 @@ export const ReportsPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
-  const formatModelName = (model?: string) => {
-    if (!model || model.toLowerCase().includes('llama')) return 'gemini:3.5-flash-lite';
-    return model;
-  };
-
   const fetchReports = async () => {
     setLoading(true);
     setError(null);
@@ -45,7 +40,7 @@ export const ReportsPage: React.FC = () => {
     setSuccessMsg(null);
     try {
       const newReport = await api.regenerateReport();
-      setSuccessMsg('Reporte generado exitosamente con Google Gemini.');
+      setSuccessMsg('Reporte generado exitosamente.');
       await fetchReports();
       setSelectedReport(newReport);
     } catch (err: any) {
@@ -68,7 +63,7 @@ export const ReportsPage: React.FC = () => {
             Módulo de Inteligencia
           </span>
           <h1 className="text-headline-lg font-headline-lg text-on-surface">
-            Historial de Reportes Ejecutivos Asistidos por Google Gemini
+            Historial de Reportes Ejecutivos Asistidos por IA
           </h1>
         </div>
 
@@ -108,7 +103,7 @@ export const ReportsPage: React.FC = () => {
               >
                 {regenerating ? 'progress_activity' : 'auto_awesome'}
               </span>
-              <span>{regenerating ? 'Generando con Gemini...' : 'Regenerar Reporte con Gemini'}</span>
+              <span>{regenerating ? 'Generando con IA...' : 'Regenerar Reporte con IA'}</span>
             </button>
           ) : (
             <div className="text-label-sm text-on-surface-variant px-3 py-2 bg-surface-container rounded-lg border border-outline-variant">
@@ -158,7 +153,7 @@ export const ReportsPage: React.FC = () => {
                       {rep.report_date}
                     </span>
                     <span className="text-label-sm font-label-sm px-2 py-0.5 rounded bg-surface text-on-surface-variant font-mono">
-                      {formatModelName(rep.ai_model)}
+                      {rep.generation_status === 'AI_GENERATED' ? 'Generado con IA' : 'Fallback determinista'}
                     </span>
                   </div>
                   <div className="text-headline-sm font-headline-sm text-on-surface mb-space-xs">
@@ -195,9 +190,9 @@ export const ReportsPage: React.FC = () => {
 
                 <div className="flex items-center space-x-space-md bg-surface-container-high px-space-md py-2 rounded-lg border border-outline-variant/30">
                   <div className="text-right">
-                    <div className="text-label-sm text-on-surface-variant font-mono">MODELO IA</div>
+                    <div className="text-label-sm text-on-surface-variant font-mono">MOTOR IA</div>
                     <div className="text-label-md font-label-md text-secondary font-mono font-bold">
-                      {formatModelName(selectedReport.ai_model)}
+                      {selectedReport.generation_status === 'AI_GENERATED' ? 'SismoWatch AI' : 'Determinista'}
                     </div>
                   </div>
                   <div className="h-8 w-[1px] bg-outline-variant"></div>
@@ -219,7 +214,9 @@ export const ReportsPage: React.FC = () => {
                   <span className="text-headline-md font-headline-md text-primary mt-2 font-mono">
                     {selectedReport.metrics.total_events}
                   </span>
-                  <span className="text-label-sm text-emerald-400 mt-1 font-mono">▲ +12% vs ayer</span>
+                  <span className="text-label-sm text-on-surface-variant mt-1">
+                    {new Date(selectedReport.report_date).toLocaleDateString('es-CO')}
+                  </span>
                 </div>
 
                 <div className="bg-surface-container p-space-md rounded-xl flex flex-col justify-between border border-outline-variant/20">
@@ -229,7 +226,9 @@ export const ReportsPage: React.FC = () => {
                   <span className="text-headline-md font-headline-md text-error mt-2 font-mono">
                     M {selectedReport.metrics.max_magnitude.toFixed(1)}
                   </span>
-                  <span className="text-label-sm text-on-surface-variant mt-1">Costa Pacífica</span>
+                  <span className="text-label-sm text-on-surface-variant mt-1 truncate max-w-[160px]">
+                    {selectedReport.metrics.top_regions?.[0]?.region || '—'}
+                  </span>
                 </div>
 
                 <div className="bg-surface-container p-space-md rounded-xl flex flex-col justify-between border border-outline-variant/20">
@@ -239,7 +238,9 @@ export const ReportsPage: React.FC = () => {
                   <span className="text-headline-md font-headline-md text-secondary mt-2 font-mono">
                     M {selectedReport.metrics.avg_magnitude.toFixed(1)}
                   </span>
-                  <span className="text-label-sm text-emerald-400 mt-1">Red Global OK</span>
+                  <span className="text-label-sm text-on-surface-variant mt-1">
+                    Eventos ≥ M4.0: {selectedReport.metrics.high_events + selectedReport.metrics.critical_events}
+                  </span>
                 </div>
 
                 <div className="bg-surface-container p-space-md rounded-xl flex flex-col justify-between border border-outline-variant/20">
@@ -253,7 +254,9 @@ export const ReportsPage: React.FC = () => {
                   >
                     {selectedReport.metrics.tsunami_alerts}
                   </span>
-                  <span className="text-label-sm text-emerald-400 mt-1">Verificado Oficial</span>
+                  <span className="text-label-sm text-on-surface-variant mt-1">
+                    {selectedReport.metrics.tsunami_alerts > 0 ? 'Bandera tsunami activa' : 'Sin bandera tsunami'}
+                  </span>
                 </div>
               </div>
 
@@ -281,12 +284,12 @@ export const ReportsPage: React.FC = () => {
                       Telemetría Oficial USGS Validada
                     </div>
                     <div className="text-body-sm text-on-surface-variant">
-                      Consistencia analítica verificada contra fuentes oficiales del USGS con redacción asistida por Google Gemini.
+                      Consistencia analítica verificada contra las cifras certificadas de la capa Gold con redacción asistida por IA generativa.
                     </div>
                   </div>
                 </div>
                 <span className="px-3 py-1 bg-emerald-400/10 text-emerald-400 text-label-sm font-label-sm rounded-full font-mono shrink-0">
-                  USGS &bull; GEMINI
+                  Cifras verificadas &bull; USGS
                 </span>
               </div>
             </>

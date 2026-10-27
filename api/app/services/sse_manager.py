@@ -22,6 +22,9 @@ async def earthquake_event_generator(client_last_event_time: datetime = None) ->
     # Start tracking from the exact moment of connection if no client checkpoint provided
     last_checked_time = client_last_event_time or datetime.now(timezone.utc)
     seen_ids = set()
+    # Ventana de frescura: solo eventos registrados en las últimas ~70 minutos.
+    # Evita replays del backfill histórico o de revisiones viejas de USGS.
+    freshness_floor = last_checked_time - timedelta(minutes=70)
     
     # Send initial connected event
     initial_payload = {
@@ -43,10 +46,11 @@ async def earthquake_event_generator(client_last_event_time: datetime = None) ->
                         longitude, latitude, depth_km, severity_level, url, published_at
                     FROM curated.events
                     WHERE published_at >= %s
+                      AND event_time >= %s
                     ORDER BY published_at ASC
                     LIMIT 20;
                     """,
-                    (last_checked_time,)
+                    (last_checked_time, freshness_floor)
                 )
                 rows = cur.fetchall() or []
                 

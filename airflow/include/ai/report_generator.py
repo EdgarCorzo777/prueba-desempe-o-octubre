@@ -12,6 +12,7 @@ from psycopg2.extras import Json
 from airflow.include.config import settings
 from airflow.include.db import get_db_cursor
 from airflow.include.ai.ollama_client import generate_chat_completion, sanitize_user_input
+from airflow.include.ai.prompting import load_prompt, validate_report_figures
 
 logger = logging.getLogger("sismowatch.reports")
 
@@ -139,38 +140,34 @@ La actividad sísmica global del periodo se encuentra dentro de los umbrales esp
 def generate_daily_executive_report(target_date: Optional[datetime.date] = None) -> Dict[str, Any]:
     """
     Generates and persists the daily executive report.
-    Tries Ollama with validated prompt grounding; falls back to deterministic template if needed.
+    Without an explicit date, covers the LAST COMPLETED UTC day (T-1): the DAG runs
+    at a fixed time and the report must be of a full day's data, never a partially
+    started day. Tries the LLM with validated prompt grounding; falls back to the
+    deterministic template if needed.
     """
-    metrics = calculate_daily_summary_metrics(target_date)
+    effective_date = target_date or (datetime.now(timezone.utc) - timedelta(days=1)).date()
+    metrics = calculate_daily_summary_metrics(effective_date)
     date_str = metrics["date"]
     report_id = f"REP_{date_str.replace('-', '')}"
-    
-    # Prompt for Ollama
-    system_prompt = (
-        "Eres un analista geofísico senior de SismoWatch. Redacta un reporte ejecutivo en español "
-        "con base EXCLUSIVA en los datos certificados que se te proporcionan. "
-        "REGLA CRÍTICA: NO inventes cifras ni porcentajes. Utiliza exactamente los números calculados."
-    )
-    
-    user_prompt = f"""
-DATOS SÍSMICOS CERTIFICADOS DEL DÍA {date_str}:
-- Total de sismos: {metrics['total_events']}
-- Magnitud máxima: {metrics['max_magnitude']}
-- Magnitud promedio: {metrics['avg_magnitude']}
-- Alertas de tsunami: {metrics['tsunami_alerts']}
-- Sismos críticos (>=7.0): {metrics['critical_events']}
-- Sismos fuertes (6.0-6.9): {metrics['high_events']}
-- Sismos moderados (4.0-5.9): {metrics['moderate_events']}
-- Sismos menores (<4.0): {metrics['low_events']}
-- Regiones más activas: {json.dumps(metrics['top_regions'], ensure_ascii=False)}
-- Eventos más destacados: {json.dumps(metrics['notable_events'], ensure_ascii=False)}
 
-Redacta un informe ejecutivo conciso de 3 a 4 párrafos que incluya:
-1. Resumen de actividad sísmica y magnitudes.
-2. Zonas geográficas más activas.
-3. Eventos destacados y alertas de tsunami si las hubo.
-4. Recomendación operativa.
-"""
+    # Prompts versionados (airflow/include/ai/prompts/) — el LLM solo redacta
+    system_prompt = load_prompt("daily_report_system.md")
+    user_prompt = load_prompt(
+        "daily_report_user.md",
+        {
+            "DATE": date_str,
+            "TOTAL": metrics['total_events'],
+            "MAX_MAG": metrics['max_magnitude'],
+            "AVG_MAG": metrics['avg_magnitude'],
+            "TSUNAMI": metrics['tsunami_alerts'],
+            "CRITICAL": metrics['critical_events'],
+            "HIGH": metrics['high_events'],
+            "MODERATE": metrics['moderate_events'],
+            "LOW": metrics['low_events'],
+            "REGIONS_JSON": json.dumps(metrics['top_regions'], ensure_ascii=False),
+            "NOTABLE_JSON": json.dumps(metrics['notable_events'], ensure_ascii=False),
+        },
+    )
 
     ai_result = generate_chat_completion(
         prompt=user_prompt,
@@ -184,12 +181,23 @@ Redacta un informe ejecutivo conciso de 3 a 4 párrafos que incluya:
     tokens = ai_result["tokens"]
     latency = ai_result["latency_ms"]
     executive_summary = ""
+    figure_validation = {"status": "NOT_APPLICABLE", "missing": []}
 
     if ai_result["status"] == "SUCCESS" and len(ai_result["content"]) > 80:
         summary_text = ai_result["content"]
-        executive_summary = summary_text
+        # Control anti-alucinación: las cifras del texto DEBEN coincidir con las calculadas.
+        figure_validation = validate_report_figures(summary_text, metrics)
+        if figure_validation["status"] == "VERIFIED":
+            executive_summary = summary_text
+        else:
+            logger.warning(
+                f"Reporte descartado por cifras inconsistente con Gold (faltantes: "
+                f"{figure_validation['missing']}). Se usa el reporte determinista."
+            )
+            executive_summary = generate_deterministic_report(metrics)
+            generation_status = "DETERMINISTIC_FALLBACK"
     else:
-        logger.info(f"Ollama unavailable or response too short ({ai_result.get('error')}). Using deterministic report.")
+        logger.info(f"LLM unavailable or response too short ({ai_result.get('error')}). Using deterministic report.")
         executive_summary = generate_deterministic_report(metrics)
         generation_status = "DETERMINISTIC_FALLBACK"
 
@@ -234,5 +242,6 @@ Redacta un informe ejecutivo conciso de 3 a 4 párrafos que incluya:
         "latency_ms": latency,
         "tokens_used": tokens,
         "executive_summary": executive_summary,
-        "metrics": metrics
+        "metrics": metrics,
+        "figure_validation": figure_validation
     }

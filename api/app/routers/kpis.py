@@ -41,7 +41,20 @@ def get_dashboard_kpis(
             (since_dt,)
         )
         stats = cur.fetchone() or {}
-        
+
+        # 1b. Contexto del evento de magnitud maxima de la ventana (lugar + hora)
+        cur.execute(
+            """
+            SELECT place, event_time
+            FROM curated.events
+            WHERE event_time >= %s
+            ORDER BY magnitude DESC, event_time DESC
+            LIMIT 1;
+            """,
+            (since_dt,)
+        )
+        max_event = cur.fetchone() or {}
+
         # 2. Latest quality score from curated.quality_metrics
         cur.execute(
             """
@@ -63,6 +76,8 @@ def get_dashboard_kpis(
     return KPIResponse(
         total_events_24h=stats.get("total_24h", 0),
         max_magnitude_24h=round(stats.get("max_mag_24h", 0.0), 2),
+        max_magnitude_place=max_event.get("place"),
+        max_magnitude_event_time=max_event.get("event_time"),
         avg_magnitude_24h=round(stats.get("avg_mag_24h", 0.0), 2),
         tsunami_alerts_24h=stats.get("tsunami_24h", 0),
         quality_score=quality_score,

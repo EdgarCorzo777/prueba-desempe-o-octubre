@@ -7,6 +7,7 @@ import { ReportsPage } from './pages/ReportsPage';
 import { PipelineQualityPage } from './pages/PipelineQualityPage';
 import { FloatingChatWidget } from './components/FloatingChatWidget';
 import { LiveToastNotification } from './components/LiveToastNotification';
+import { ScreenCrackEffect } from './components/ScreenCrackEffect';
 import { LoadingView } from './components/StateViews';
 import { sseService, SSEStatus } from './services/sse';
 
@@ -95,6 +96,9 @@ const MainLayout: React.FC = () => {
     <div className="min-h-screen bg-surface flex flex-col font-body-md text-on-surface">
       {/* Realtime Toast Notifications */}
       <LiveToastNotification />
+
+      {/* Efecto de grietas en pantalla ante sismos/tsunamis en vivo */}
+      <ScreenCrackEffect />
 
       {/* Top Navbar */}
       <Navbar

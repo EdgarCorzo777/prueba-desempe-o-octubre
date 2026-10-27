@@ -1,12 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { api } from '../services/api';
 import { ChatResponse } from '../types';
+import { ChatMarkdown } from './ChatMarkdown';
 
 interface ChatMessage {
   id: string;
   sender: 'user' | 'ai';
   text: string;
   time: string;
+  period?: string;
   model?: string;
   latency?: number;
   isFallback?: boolean;
@@ -20,9 +22,8 @@ export const FloatingChatWidget: React.FC = () => {
     {
       id: 'welcome',
       sender: 'ai',
-      text: 'Hola. Soy el analista virtual de SismoWatch asistido por Google Gemini. ¿Qué datos de telemetría o análisis de fallas necesitas?',
+      text: 'Hola. Soy el analista virtual de SismoWatch, respondiendo con las cifras certificadas del sistema. ¿Qué datos sísmicos, comparativas o información de la plataforma necesitas?',
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      model: 'gemini:3.5-flash-lite',
     },
   ]);
 
@@ -37,11 +38,6 @@ export const FloatingChatWidget: React.FC = () => {
       scrollToBottom();
     }
   }, [messages, isOpen]);
-
-  const formatModelName = (model?: string) => {
-    if (!model || model.toLowerCase().includes('llama')) return 'gemini:3.5-flash-lite';
-    return model;
-  };
 
   const handleSend = async (queryToSend?: string) => {
     const q = (queryToSend || inputQuery).trim();
@@ -65,7 +61,7 @@ export const FloatingChatWidget: React.FC = () => {
         sender: 'ai',
         text: res.answer,
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        model: formatModelName(res.ai_model),
+        period: res.period_consulted,
         latency: res.latency_ms,
         isFallback: res.is_fallback,
       };
@@ -133,11 +129,14 @@ export const FloatingChatWidget: React.FC = () => {
                         : 'self-start bg-surface-container text-on-surface border-outline-variant shadow-sm'
                     }`}
                   >
-                    <p className="text-body-md whitespace-pre-wrap leading-relaxed">{m.text}</p>
+                    <ChatMarkdown text={m.text} />
                     {!isUser && (
                       <div className="mt-2 pt-1.5 border-t border-outline-variant/30 flex items-center justify-between text-label-sm font-label-sm text-on-surface-variant">
                         <span>
-                          {m.isFallback ? 'Modo Determinista' : formatModelName(m.model)}
+                          {m.isFallback ? 'Modo Determinista' : 'Motor Analítico SismoWatch'}
+                          {m.period && (
+                            <span className="ml-2 opacity-70 normal-case">· {m.period}</span>
+                          )}
                         </span>
                         {m.latency !== undefined && (
                           <span className="text-primary font-mono">{m.latency.toFixed(0)}ms</span>
@@ -153,7 +152,7 @@ export const FloatingChatWidget: React.FC = () => {
                   <span className="material-symbols-outlined animate-spin text-primary text-[18px]">
                     progress_activity
                   </span>
-                  <span>Consultando datos analíticos y Google Gemini...</span>
+                  <span>Consultando datos analíticos del sistema...</span>
                 </div>
               )}
 

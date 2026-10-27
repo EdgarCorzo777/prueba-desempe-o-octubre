@@ -110,7 +110,10 @@ def generate_chat_completion(
                 "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1024}
             }
             try:
-                g_res = requests.post(gemini_url, json=gemini_payload, timeout=min(25, req_timeout))
+                # Tope de 25s para el proveedor cloud: si no responde rápido,
+                # el enrutador desciende al siguiente proveedor o al fallback determinista.
+                gemini_timeout = req_timeout if req_timeout and req_timeout <= 25 else 25
+                g_res = requests.post(gemini_url, json=gemini_payload, timeout=gemini_timeout)
                 if g_res.status_code == 200:
                     g_data = g_res.json()
                     candidates = g_data.get("candidates", [])

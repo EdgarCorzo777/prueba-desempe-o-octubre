@@ -11,6 +11,11 @@ interface NavbarProps {
 
 export const Navbar: React.FC<NavbarProps> = ({ sseStatus, currentTab, onSelectTab }) => {
   const { user, logout, isAdmin } = useAuth();
+  const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    setMobileMenuOpen(false);
+  }, [currentTab]);
 
   const getBeacon = () => {
     switch (sseStatus) {
@@ -66,13 +71,13 @@ export const Navbar: React.FC<NavbarProps> = ({ sseStatus, currentTab, onSelectT
             <span className="text-headline-sm font-headline-sm text-primary tracking-wider uppercase block">
               SISMoWATCH
             </span>
-            <span className="text-label-sm font-label-sm text-on-surface-variant tracking-widest uppercase block">
+            <span className="hidden sm:block text-label-sm font-label-sm text-on-surface-variant tracking-widest uppercase block">
               OBSERVATORIO GLOBAL
             </span>
           </div>
         </div>
 
-        {/* Navigation Tabs */}
+        {/* Navigation Tabs (desktop) */}
         <nav
           className="hidden md:flex items-center space-x-space-sm bg-surface-container-low p-1 rounded-xl border border-outline-variant/20"
           data-active-classes="bg-primary-container text-on-primary-container font-bold"
@@ -95,6 +100,22 @@ export const Navbar: React.FC<NavbarProps> = ({ sseStatus, currentTab, onSelectT
             );
           })}
         </nav>
+
+        {/* Hamburger (mobile): la navegación no debe desaparecer en pantallas pequeñas */}
+        {navItems.length > 1 && (
+          <button
+            className="md:hidden p-2 rounded-lg bg-surface-container-low border border-outline-variant/30 text-on-surface-variant hover:text-on-surface transition-colors"
+            onClick={() => setMobileMenuOpen((v) => !v)}
+            data-path="menu-mobile"
+            title="Menú de navegación"
+            aria-label="Abrir menú"
+            aria-expanded={mobileMenuOpen}
+          >
+            <span className="material-symbols-outlined text-[24px]">
+              {mobileMenuOpen ? 'close' : 'menu'}
+            </span>
+          </button>
+        )}
 
         {/* Right side controls: SSE Beacon & Profile */}
         <div className="flex items-center space-x-space-md">
@@ -147,6 +168,43 @@ export const Navbar: React.FC<NavbarProps> = ({ sseStatus, currentTab, onSelectT
           </button>
         </div>
       </div>
+
+      {/* Mobile Navigation Dropdown */}
+      {mobileMenuOpen && (
+        <nav
+          className="md:hidden absolute top-16 left-0 w-full bg-surface/95 backdrop-blur-xl border-b border-outline-variant/40 shadow-xl z-40 p-3 space-y-1"
+          data-path="menu-mobile-overlay"
+        >
+          {navItems.map((item) => {
+            const isActive = currentTab === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => onSelectTab(item.id)}
+                className={`w-full text-left px-space-md py-2.5 rounded-lg text-label-md border transition-all ${
+                  isActive
+                    ? 'bg-primary-container text-on-primary-container font-bold border-primary-fixed-dim'
+                    : 'text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high border-transparent'
+                }`}
+              >
+                {item.label}
+              </button>
+            );
+          })}
+          <div className="pt-2 border-t border-outline-variant/30 flex items-center justify-between">
+            <div className="flex items-center space-x-space-xs px-space-sm">
+              <span className={`w-2 h-2 rounded-full ${beacon.color} animate-pulse`}></span>
+              <span className={`text-label-sm ${beacon.textCol}`}>{beacon.text}</span>
+            </div>
+            <button
+              onClick={logout}
+              className="px-space-md py-2 rounded-lg text-label-md text-on-surface-variant hover:text-error"
+            >
+              Cerrar sesión
+            </button>
+          </div>
+        </nav>
+      )}
     </header>
   );
 };

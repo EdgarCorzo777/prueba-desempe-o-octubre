@@ -96,9 +96,6 @@ export const LoginPage: React.FC = () => {
               <label className="text-label-md font-label-md text-on-surface-variant uppercase">
                 Contraseña
               </label>
-              <span className="text-label-sm font-label-sm text-primary hover:underline cursor-pointer">
-                ¿Olvidó su clave?
-              </span>
             </div>
             <div className="relative flex items-center">
               <span className="material-symbols-outlined absolute left-3 text-on-surface-variant text-[20px]">
@@ -143,7 +140,7 @@ export const LoginPage: React.FC = () => {
           <div className="text-label-sm font-label-sm text-on-surface-variant uppercase tracking-widest text-center mb-space-md">
             Acceso Rápido de Demostración
           </div>
-          <div className="grid grid-cols-2 gap-space-sm">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-space-sm">
             <button
               className="flex items-center justify-center space-x-space-xs bg-surface-container hover:bg-surface-container-high border border-[#1e293b] p-2.5 rounded-lg text-label-md text-primary transition-all"
               type="button"

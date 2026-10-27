@@ -5,6 +5,9 @@ from datetime import datetime, date
 class KPIResponse(BaseModel):
     total_events_24h: int
     max_magnitude_24h: float
+    # Contexto del evento de magnitud máxima en la ventana consultada
+    max_magnitude_place: Optional[str] = None
+    max_magnitude_event_time: Optional[datetime] = None
     avg_magnitude_24h: float
     tsunami_alerts_24h: int
     quality_score: float

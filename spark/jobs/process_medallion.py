@@ -134,8 +134,9 @@ def publish_gold_records(valid_records: List[Dict[str, Any]]) -> int:
         depth_km = EXCLUDED.depth_km,
         severity_level = EXCLUDED.severity_level,
         url = EXCLUDED.url,
-        ingestion_batch_id = EXCLUDED.ingestion_batch_id,
-        published_at = NOW()
+        ingestion_batch_id = EXCLUDED.ingestion_batch_id
+        -- published_at NO se toca en actualizaciones: conserva la primera publicación,
+        -- así el stream SSE solo emite eventos genuinamente nuevos (no replays de USGS).
     WHERE EXCLUDED.updated_time >= curated.events.updated_time;
     """
     published_count = 0

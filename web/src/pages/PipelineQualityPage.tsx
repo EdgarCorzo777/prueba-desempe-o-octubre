@@ -79,18 +79,22 @@ export const PipelineQualityPage: React.FC = () => {
           </div>
           <div>
             <div className="text-headline-xl font-headline-xl text-on-surface mb-1 font-mono">
-              {pipeline?.events_in_bronze.toLocaleString() || '1,482,931'}
+              {pipeline?.events_in_bronze.toLocaleString() ?? '—'}
             </div>
             <div className="text-body-sm text-on-surface-variant">
-              Ingested GeoJSON payloads / 24h
+              Payloads GeoJSON acumulados (total)
             </div>
           </div>
           <div className="mt-space-lg pt-space-md border-t border-outline-variant/30 flex items-center justify-between">
             <span className="text-label-sm text-on-surface-variant font-mono">
-              Latencia: <strong className="text-amber-400">120ms</strong>
+              Última ingesta: <strong className="text-amber-400">
+                {pipeline?.latest_ingestion_time
+                  ? new Date(pipeline.latest_ingestion_time).toLocaleTimeString('es-CO', { hour12: false })
+                  : '—'}
+              </strong>
             </span>
             <span className="text-label-sm text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded-full font-mono font-bold">
-              Stream Activo
+              {pipeline?.latest_ingestion_status || '—'}
             </span>
           </div>
         </div>
@@ -106,7 +110,7 @@ export const PipelineQualityPage: React.FC = () => {
           </div>
           <div>
             <div className="text-headline-xl font-headline-xl text-on-surface mb-1 font-mono">
-              {pipeline?.events_in_silver.toLocaleString() || '1,479,102'}
+              {pipeline?.events_in_silver.toLocaleString() ?? '—'}
             </div>
             <div className="text-body-sm text-on-surface-variant">
               Normalized, typed &amp; deduplicated events
@@ -114,7 +118,9 @@ export const PipelineQualityPage: React.FC = () => {
           </div>
           <div className="mt-space-lg pt-space-md border-t border-outline-variant/30 flex items-center justify-between">
             <span className="text-label-sm text-on-surface-variant font-mono">
-              Calidad: <strong className="text-secondary">99.7%</strong>
+              Calidad: <strong className="text-secondary">
+                {pipeline?.quality_score !== undefined ? `${pipeline.quality_score.toFixed(1)}%` : '—'}
+              </strong>
             </span>
             <span className="text-label-sm text-secondary bg-secondary/10 px-2 py-0.5 rounded-full font-mono font-bold">
               Spark ETL
@@ -122,12 +128,12 @@ export const PipelineQualityPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Curated Analytics Layer */}
+        {/* Gold Layer */}
         <div className="bg-surface-container p-space-lg rounded-xl flex flex-col justify-between relative overflow-hidden group border border-outline-variant/20 shadow-lg">
           <div className="absolute top-0 right-0 w-32 h-32 bg-primary-container/10 rounded-full blur-2xl group-hover:bg-primary-container/20 transition-all pointer-events-none"></div>
           <div className="flex items-center justify-between mb-space-md">
             <span className="text-label-md font-label-md text-primary-fixed-dim uppercase tracking-widest font-mono font-bold">
-              Capa Curated (Analytics)
+              Gold Layer (Curated)
             </span>
             <span
               className="material-symbols-outlined text-primary-fixed-dim text-[24px]"
@@ -138,18 +144,15 @@ export const PipelineQualityPage: React.FC = () => {
           </div>
           <div>
             <div className="text-headline-xl font-headline-xl text-on-surface mb-1 font-mono">
-              {pipeline?.events_in_gold.toLocaleString() || '842,510'}
+              {pipeline?.events_in_gold.toLocaleString() ?? '—'}
             </div>
             <div className="text-body-sm text-on-surface-variant">
-              Aggregated features &amp; ML models ready
+              Eventos válidos listos para consumo
             </div>
           </div>
           <div className="mt-space-lg pt-space-md border-t border-outline-variant/30 flex items-center justify-between">
-            <span className="text-label-sm text-on-surface-variant font-mono">
-              Destino: <strong className="text-primary-fixed-dim">Delta Lake</strong>
-            </span>
             <span className="text-label-sm text-primary-container bg-primary-container/10 px-2 py-0.5 rounded-full font-mono font-bold">
-              Consumo Gemini
+              Consumo API
             </span>
           </div>
         </div>
@@ -197,7 +200,7 @@ export const PipelineQualityPage: React.FC = () => {
                         </td>
                         <td className="py-3.5 px-4 text-on-surface-variant">{dag.schedule}</td>
                         <td className="py-3.5 px-4 text-label-sm font-label-sm font-mono">
-                          {dag.last_run ? new Date(dag.last_run).toLocaleTimeString() : 'Hace 2 mins'}
+                          {dag.last_run ? new Date(dag.last_run).toLocaleTimeString('es-CO') : '—'}
                         </td>
                         <td className="py-3.5 px-4">
                           <span className="inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 text-label-sm font-label-sm font-bold">
@@ -208,60 +211,11 @@ export const PipelineQualityPage: React.FC = () => {
                       </tr>
                     ))
                   ) : (
-                    <>
-                      <tr className="hover:bg-surface-container-high/50 transition-colors">
-                        <td className="py-3.5 px-4 font-label-md text-primary-fixed-dim">
-                          usgs_seismic_ingestion_bronze
-                        </td>
-                        <td className="py-3.5 px-4 text-on-surface-variant">5 min</td>
-                        <td className="py-3.5 px-4 text-label-sm font-label-sm font-mono">Hace 2 mins</td>
-                        <td className="py-3.5 px-4">
-                          <span className="inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 text-label-sm font-label-sm font-bold">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                            <span>success</span>
-                          </span>
-                        </td>
-                      </tr>
-                      <tr className="hover:bg-surface-container-high/50 transition-colors">
-                        <td className="py-3.5 px-4 font-label-md text-primary-fixed-dim">
-                          spark_bronze_to_silver_pipeline
-                        </td>
-                        <td className="py-3.5 px-4 text-on-surface-variant">15 min</td>
-                        <td className="py-3.5 px-4 text-label-sm font-label-sm font-mono">Hace 4 mins</td>
-                        <td className="py-3.5 px-4">
-                          <span className="inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 text-label-sm font-label-sm font-bold">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                            <span>success</span>
-                          </span>
-                        </td>
-                      </tr>
-                      <tr className="hover:bg-surface-container-high/50 transition-colors">
-                        <td className="py-3.5 px-4 font-label-md text-primary-fixed-dim">
-                          silver_to_curated_aggregations
-                        </td>
-                        <td className="py-3.5 px-4 text-on-surface-variant">1 hora</td>
-                        <td className="py-3.5 px-4 text-label-sm font-label-sm font-mono">Hace 18 mins</td>
-                        <td className="py-3.5 px-4">
-                          <span className="inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 text-label-sm font-label-sm font-bold">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                            <span>success</span>
-                          </span>
-                        </td>
-                      </tr>
-                      <tr className="hover:bg-surface-container-high/50 transition-colors">
-                        <td className="py-3.5 px-4 font-label-md text-primary-fixed-dim">
-                          ml_feature_store_sync
-                        </td>
-                        <td className="py-3.5 px-4 text-on-surface-variant">Diario</td>
-                        <td className="py-3.5 px-4 text-label-sm font-label-sm font-mono">Hace 3 horas</td>
-                        <td className="py-3.5 px-4">
-                          <span className="inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 text-label-sm font-label-sm font-bold">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                            <span>success</span>
-                          </span>
-                        </td>
-                      </tr>
-                    </>
+                    <tr>
+                      <td colSpan={4} className="py-8 px-4 text-center text-label-md text-on-surface-variant">
+                        No hay datos de ejecución de DAGs disponibles
+                      </td>
+                    </tr>
                   )}
                 </tbody>
               </table>

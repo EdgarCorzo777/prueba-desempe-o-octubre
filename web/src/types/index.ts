@@ -10,6 +10,8 @@ export interface User {
 export interface KPIStats {
   total_events_24h: number;
   max_magnitude_24h: number;
+  max_magnitude_place?: string | null;
+  max_magnitude_event_time?: string | null;
   avg_magnitude_24h: number;
   tsunami_alerts_24h: number;
   quality_score: number;

@@ -6,6 +6,9 @@ services:
     image: alpine/minio:latest-release
     container_name: sismowatch_minio
     restart: always
+    # La imagen corre con usuario "minio" y no puede escribir en el volumen nombrado
+    # recién creado (propietario root); se ejecuta como root para evitar el crashloop.
+    user: root
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-sismowatch_minio_admin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-sismowatch_minio_pass_2026}
@@ -72,15 +75,19 @@ services:
       TRANSFORM_PASSWORD: ${TRANSFORM_PASSWORD:-transform_secret_2026}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:1b}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash-lite}
       MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-sismowatch_minio_admin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-sismowatch_minio_pass_2026}
       MINIO_BUCKET: ${MINIO_BUCKET:-sismowatch-bronze}
       PYTHONPATH: /opt/airflow:/opt/airflow/include
+      # Paquetes extra instalados al arrancar el contenedor (cliente S3 para lago Bronze)
+      _PIP_ADDITIONAL_REQUIREMENTS: minio
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ./airflow/simple_auth_manager_passwords.json:/opt/airflow/simple_auth_manager_passwords.json:ro
+      - ./airflow/simple_auth_manager_passwords.json:/opt/airflow/simple_auth_manager_passwords.json
       - ./airflow/dags:/opt/airflow/dags
       - ./airflow/include:/opt/airflow/include
       - ./spark:/opt/airflow/spark
@@ -119,6 +126,12 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:1b}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash-lite}
+      # REST API de Airflow (estado real de los DAGs para /api/pipeline/status)
+      AIRFLOW_API_BASE_URL: http://airflow:8080
+      AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_WWW_USER_USERNAME:-admin}
+      AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_WWW_USER_PASSWORD:-admin_sismowatch}
       MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-sismowatch_minio_admin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-sismowatch_minio_pass_2026}

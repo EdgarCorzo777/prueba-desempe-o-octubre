@@ -66,3 +66,10 @@ airflow/logs/
 airflow/airflow.cfg
 airflow/webserver_config.py
 airflow/airflow.db
+
+# Archivos locales de trabajo (no formar parte del repositorio público)
+CHANGELOG.md
+docs/PRESENTACION_NOTAS.md
+docs/capturas/
+opencode_bridge.py
+sismowatch-ai

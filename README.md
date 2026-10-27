@@ -1,349 +1,384 @@
-# SISMoWATCH — Plataforma de Monitoreo Sísmico Global
+# SismoWatch — Plataforma de Monitoreo Sísmico Global
 
-> **Plataforma Integral de Ingesta, Orquestación con Airflow, Procesamiento Medallion, Calidad de Datos, Detección de Anomalías e Inteligencia Artificial Local Grounded en Gold.**
-
----
-
-## 1. Propósito de la Solución y Caso de Uso
-
-**SismoWatch** es la nueva vertical de monitoreo y gestión de riesgo sísmico global de **SuperApp**.
-Convierte los feeds públicos y en constante actualización del **USGS (United States Geological Survey)** en un producto de datos certificado, estructurado, resiliente e interactivo, permitiendo a los equipos de operaciones y mitigación de desastres:
-
-1. Detectar eventos sísmicos en vivo sin recargas de pantalla mediante **Server-Sent Events (SSE)**.
-2. Analizar tendencias temporales, picos de magnitud y distribución geoespacial sobre datos limpios.
-3. Consultar reportes ejecutivos redactados por IA local (**Ollama**) anclados a métricas exactas calculadas matemáticamente en la capa Gold, con respaldo determinista si el LLM falla.
-4. Identificar anomalías estadísticas (enjambres sísmicos y picos energéticos) con algoritmos Z-Score.
-5. Auditar la calidad de los datos y consultar registros rechazados en cuarentena con control de acceso por roles (**RBAC**).
+> Observatorio de datos con ingesta continua del USGS, pipeline Medallion orquestado con Apache Airflow,
+> calidad de datos con cuarentena, IA generativa con anti-alucinación verificada, detección de anomalías
+> estadísticas y radio en tiempo real vía SSE — todo dockerizado y con control de acceso por roles.
 
 ---
 
-## 2. Diagrama de Arquitectura y Flujo de Datos
+## 1. ¿Qué es?
+
+SismoWatch convierte los feeds públicos del **USGS (United States Geological Survey)** en un
+**producto de datos certificado y consumible**:
+
+| Capacidad | Cómo lo hace |
+|---|---|
+| Monitoreo en vivo | Notificaciones SSE y actualización silenciosa de KPIs/gráficas sin recargar la página (~2.4 s de punta a punta) |
+| Histórico estructurado | Arquitectura Medallion (Bronze → Silver → Gold) sobre PostgreSQL con idempotencia garantizada |
+| Calidad auditada | 7 reglas geofísicas por lote, cuarentena trazable y score de calidad expuesto en la UI |
+| IA confiable | Reportes ejecutivos y chat con cifras **calculadas en SQL** y validadas contra alucinaciones |
+| Anomalías | Detector Z-Score para enjambres sísmicos y picos de magnitud M≥6.0 |
+| Historia masiva | Backfill paramétrico idempotente de 1 a 60 días (botón admin o CLI; default 30) |
+
+---
+
+## 2. Arquitectura general
 
 ```mermaid
-flowchart TD
-    USGS["API Pública USGS\n(GeoJSON all_hour / Query API)"] -->|HTTPS Ingest cada 5 min| AF_INGEST["DAG 1: Ingesta Airflow\n(raw.usgs_earthquakes_raw)"]
-  
-    subgraph Medallion Architecture ["PostgreSQL Database (Medallion Layers)"]
-        subgraph Bronze ["Capa Bronze (Esquema raw)"]
-            RAW_EVENTS[("raw.usgs_earthquakes_raw\n(Payload GeoJSON + Metadatos)")]
-            RAW_METRICS[("raw.ingestion_metrics\n(Latencia, HTTP status, Conteos)")]
-        end
-      
-        subgraph Silver ["Capa Silver (Esquema staging)"]
-            STG_EVENTS[("staging.usgs_earthquakes_staging\n(Normalizado, deduplicado, tipado)")]
-            QUARANTINE[("staging.quarantine_events\n(Registros inválidos + motivo de rechazo)")]
-        end
-      
-        subgraph Gold ["Capa Gold (Esquema curated)"]
-            CUR_EVENTS[("curated.events\n(Sismos válidos, severidad, coords)")]
-            CUR_KPIS[("curated.daily_kpis\n(KPIs 24h, regiones, distribución)")]
-            CUR_REPORTS[("curated.daily_reports\n(Reportes ejecutivos + Fallback)")]
-            CUR_ANOMALIES[("curated.anomaly_alerts\n(Enjambres y picos Z-Score)")]
-            CUR_QUALITY[("curated.quality_metrics\n(Score de calidad y reglas)")]
-        end
-      
-        subgraph Auth ["Esquema auth"]
-            AUTH_USERS[("auth.users\n(Roles: admin, viewer - bcrypt)")]
-        end
+flowchart LR
+    subgraph Ext["🌐 Origen"]
+        USGS["API USGS<br/>all_hour.geojson + FDSN Query"]
     end
 
-    AF_INGEST --> RAW_EVENTS
-    AF_INGEST --> RAW_METRICS
-  
-    RAW_EVENTS -->|TriggerDAGRun| AF_TRANSFORM["DAG 2: Transformación & Spark\nPySpark Job + Quality Rules"]
-    AF_TRANSFORM --> STG_EVENTS
-    AF_TRANSFORM -->|Datos inválidos| QUARANTINE
-    AF_TRANSFORM -->|Datos aprobados 100%| CUR_EVENTS
-    AF_TRANSFORM --> CUR_QUALITY
-  
-    CUR_EVENTS -->|Cálculo analítico diario| AF_AI["DAG 3: Reporte Diario con IA\n(Estadísticas SQL + Prompt Ollama)"]
-    AF_AI -->|Inferencia estructurada| OLLAMA["Ollama Local LLM\n(llama3.2:1b / qwen2.5:3b)"]
-    OLLAMA -->|Validación cruzada de cifras| AF_AI
-    AF_AI --> CUR_REPORTS
-
-    CUR_EVENTS --> ANOMALY_DETECTOR["Detector Analítico de Anomalías\n(Z-Score & Clustering Espacial)"]
-    ANOMALY_DETECTOR --> CUR_ANOMALIES
-
-    subgraph Consumo ["Capa de Consumo y Aplicación"]
-        FASTAPI["FastAPI Backend\n(JWT, CORS, SSE /api/stream)"]
-        REACT_WEB["Frontend React + TS + Tailwind\n(SismoWatch Modern UI)"]
+    subgraph Orch["⚙️ Orquestación — Apache Airflow 3"]
+        D1["DAG 1 · usgs_ingestion<br/>cron */5 min"]
+        D2["DAG 2 · transformation_quality<br/>encadenado por Dataset"]
+        D3["DAG 3 · daily_ai_report<br/>cron 12:00 UTC / 07:00 Colombia"]
     end
 
-    CUR_EVENTS -.->|Lectura exclusiva| FASTAPI
-    CUR_KPIS -.->|Lectura exclusiva| FASTAPI
-    CUR_REPORTS -.->|Lectura exclusiva| FASTAPI
-    CUR_ANOMALIES -.->|Lectura exclusiva| FASTAPI
-    CUR_QUALITY -.->|Lectura resumen| FASTAPI
-    QUARANTINE -.->|Lectura sólo Admin| FASTAPI
-    AUTH_USERS -.->|Autenticación| FASTAPI
+    subgraph DB["🐘 PostgreSQL — Capas Medallion"]
+        BR[(Bronze<br/>raw.usgs_earthquakes_raw)]
+        SI[(Silver<br/>staging.usgs_earthquakes_staging)]
+        CO[(Staging Cuarentena<br/>staging.quarantine_events)]
+        GO[(Gold<br/>curated.events + KPIs + reportes<br/>+ anomalías + quality_metrics)]
+    end
 
-    FASTAPI -->|SSE / REST JSON| REACT_WEB
+    SP["Spark / Motor vectorizado<br/>spark/jobs/process_medallion.py"]
+    AI["Proveedores IA<br/>Gemini primario · fallback determinista"]
+
+    subgraph App["🖥️ Capa de aplicación"]
+        API["FastAPI<br/>JWT · RBAC · SSE"]
+        WEB["React + Vite + Tailwind<br/>Dashboard · Reportes · Pipeline · Chat en vivo"]
+    end
+
+    USGS -->|cada 5 min| D1 --> BR
+    BR -->|"Dataset trigger"| D2 --> SP
+    SP -->|"válido (100% del lote)"| GO
+    SP -->|"inválido → aislado + auditado"| CO
+    GO -->|"solo lectura (rol api_user)"| API
+    SP -->|"score del lote"| GO
+    GO -->|"métricas exactas del día"| D3
+    D3 -->|"prompts versionados"| AI
+    AI -->|"solo redacta; cifras validadas contra Gold"| D3
+    D3 -->|"persiste"| GO
+    API -->|"REST + SSE"| WEB
 ```
+
+**Decisiones clave detrás del diseño:**
+
+| Decisión | Por qué |
+|---|---|
+| Apache Airflow como orquestador | Reintientos, cron de ingesta, encadenamiento por `Dataset` (ingesta dispara transformación) y trazabilidad de ejecuciones expuesta también vía REST API v2 en la pantalla de Pipeline |
+| PostgreSQL Medallion (no Spark distribuido) | Volumen real del dominio (miles de sismos/día) cabe en una BD relacional; Spark/PySpark local vectorizado prepara el salto a clúster gestionado (EMR/Dataproc) si el histórico escala |
+| SSE en vez de WebSockets | El monitoreo es unidireccional servidor→cliente; reconexión nativa del navegador, sin handshake ni overhead de sockets |
+| El LLM **solo redacta**, nunca calcula | Toda cifra se computa en SQL/Python; si el texto del LLM no coincide con los números certificados, el reporte se descarta y lo reemplaza un motor determinista (anti-alucinación con evidencia auditable) |
+| Roles de BD con mínimo privilegio | `ingest_user` escribe solo Bronze; `transform_user` solo Silver/Gold; `api_user` solo lectura de Gold |
 
 ---
 
-## 3. Estructura del Repositorio
+## 3. Arquitectura Medallion en detalle
 
-```text
-.
-├── docker-compose.yml              # Orquestación de contenedores (PostgreSQL, Airflow, API, Web)
-├── .env.example                    # Plantilla de variables de entorno y secretos
-├── .gitignore                      # Prevención estricta de fuga de secretos y artefactos
-├── README.md                       # Documentación operativa y sustentación técnica
-├── CHANGELOG.md                    # Historial de cambios fechado (America/Bogota)
-├── requirements.txt                # Dependencias para pruebas y desarrollo
-├── docs/
-│   └── ARQUITECTURA.md             # Especificación técnica detallada y trade-offs
-├── db/
-│   └── init/
-│       ├── 01_init_schemas_roles.sql # Esquemas Medallion y roles con mínimo privilegio
-│       ├── 02_create_tables.sql      # DDL de tablas, índices y restricciones
-│       └── 03_seed_data.sql          # Usuarios semilla con hashes bcrypt
-├── airflow/
-│   ├── dags/
-│   │   ├── usgs_earthquake_ingestion_dag.py     # DAG 1: Ingesta USGS continua (*/5 min)
-│   │   ├── usgs_transformation_quality_dag.py   # DAG 2: Medallion Silver/Gold y calidad
-│   │   └── sismowatch_daily_ai_report_dag.py    # DAG 3: Reporte diario asistido por IA
-│   ├── include/
-│   │   ├── config.py               # Configuración central
-│   │   ├── db.py                   # Conexión resiliente a PostgreSQL por rol
-│   │   ├── ingestion/              # Cliente USGS y script de backfill 30 días
-│   │   ├── transformations/        # Wrapper de transformación Spark
-│   │   ├── quality/                # Reglas geofísicas y evaluador de cuarentena
-│   │   ├── analytics/              # Detector estadístico de anomalías (Z-Score)
-│   │   └── ai/                     # Cliente Ollama local y generador con fallback
-│   └── tests/
-│       └── test_dag_integrity.py   # Pruebas de importación e integridad de DAGs
-├── spark/
-│   ├── jobs/
-│   │   └── process_medallion.py    # Job de procesamiento Medallion e idempotencia
-│   └── tests/
-│       └── test_spark_transformer.py # Pruebas unitarias de calidad y cuarentena
-├── api/
-│   ├── Dockerfile                  # Contenedor FastAPI (Python 3.12-slim)
-│   ├── requirements.txt            # Dependencias backend
-│   ├── app/
-│   │   ├── main.py                 # Ensamblaje FastAPI con CORS y RBAC
-│   │   ├── config.py               # Configuración API
-│   │   ├── database.py             # Acceso de bajo privilegio con auto-resolución
-│   │   ├── auth/                   # Autenticación JWT y validadores de rol
-│   │   ├── routers/                # Endpoints (kpis, events, stats, reports, stream, etc.)
-│   │   └── services/               # SSE, exportador CSV/HTML y chat asistido por IA
-│   └── tests/
-│       ├── conftest.py
-│       ├── test_auth.py            # Pruebas de autenticación y 401
-│       └── test_endpoints.py       # Pruebas de endpoints y rechazo 403 para Viewer
-└── web/
-    ├── Dockerfile                  # Multi-stage build (Node 20 -> Nginx alpine)
-    ├── package.json
-    ├── vite.config.ts
-    ├── src/
-    │   ├── context/AuthContext.tsx # Contexto de autenticación y estado de sesión
-    │   ├── services/api.ts         # Cliente API con tipado estricto
-    │   ├── services/sse.ts         # Conexión persistente Server-Sent Events
-    │   ├── components/             # Navbar, Sidebar, StatCards, Mapa Leaflet, Gráficos SVG
-    │   └── pages/                  # Login, Dashboard, Live Monitor, Reports, Pipeline, Chat
-    └── index.html
+```mermaid
+flowchart TB
+    subgraph Bronze["🧱 Bronze — raw (crudo, nunca alterado)"]
+        direction LR
+        B1[("raw.usgs_earthquakes_raw<br/>payload GeoJSON íntegro + metadatos")]
+        B2[("raw.ingestion_metrics<br/>latencia, HTTP status, conteos")]
+        B3[("Lakehouse histórico<br/>MinIO: sismowatch-bronze (JSON crudo)")]
+    end
+
+    subgraph Silver["🥈 Silver — staging (conformado)"]
+        direction LR
+        S1[("staging.usgs_earthquakes_staging<br/>normalizado, tipado, deduplicado")]
+        S2[("staging.quarantine_events<br/>rechazados + motivo + payload")]
+    end
+
+    subgraph Gold["🥇 Gold — curated (producto de datos)"]
+        direction LR
+        G1[("curated.events<br/>sismos válidos + severity + coords")]
+        G2[("curated.daily_kpis · daily_reports<br/>anomaly_alerts · quality_metrics")]
+    end
+
+    Q["7 reglas geofísicas<br/>ID, timestamp, coords, lat [-90,90],<br/>lon [-180,180], mag [-2,10], depth [-5,1000]"]
+
+    B1 -->|"Spark: parsing + validación"| Q
+    Q -->|"aprueba"| S1 -->|"publica"| G1
+    Q -->|"falla → aislado"| S2
+    S1 --> G2
 ```
+
+**Idempotencia end-to-end:** Bronze inserta con `ON CONFLICT (id) DO UPDATE` y Gold con
+`ON CONFLICT (event_id) DO UPDATE` condicionado a `updated_time` — re-ejecutar un pipeline o
+un backfill **nunca duplica registros** (hay prueba unitaria de idempotencia en
+`spark/tests/test_spark_transformer.py`). En re-publicaciones de USGS, Gold conserva el
+`published_at` original: un evento actualizado no "renace" ni re-entra al stream en vivo.
+
+**Invariante innegociable:** ningún registro inválido llega jamás a Gold. Si un lote completo
+sale inválido, la calidad se marca `BLOCKED`, se detiene la publicación y se dispara el
+`failure_alert_callback` de Airflow.
 
 ---
 
-## 4. Puesta en Marcha (Despliegue con Docker Compose)
+## 4. Flujo en tiempo real (notificaciones y refresco en vivo)
 
-### 4.1 Requisitos Previos
+```mermaid
+sequenceDiagram
+    participant USGS as API USGS
+    participant Airflow as DAG Ingesta (*/5 min)
+    participant Spark as Transformación+Gold
+    participant API as FastAPI (SSE)
+    participant UI as Dashboard React
 
+    USGS->>Airflow: feed all_hour
+    Airflow->>Airflow: persiste Bronze (dedup por id)
+    Airflow-->>Spark: Dataset trigger
+    Spark->>Spark: reglas de calidad → Gold
+    Spark->>API: (el SSE consulta Gold cada 5s)
+    API->>UI: event: earthquake (SSE)
+    Note over UI: toast de alerta + contador al instante
+    UI->>UI: efecto de grietas escaladas por magnitud (M≥2.5 o tsunami, 2.2 s)
+    UI->>API: t + 1.5 s debounce: KPIs + gráficas (refresco silencioso, sin loading)
+```
+
+- El stream `GET /api/stream` solo emite eventos **genuinamente nuevos** (fresco: `published_at`
+  desde la conexión **y** `event_time ≥ NOW() - 70 min`): el histórico del backfill nunca entra al canal.
+- **Dos relojes distintos en el dashboard:** la tabla se ordena por `event_time` (cuándo *ocurrió*,
+  UTC, estándar científico) y la tarjeta "Última Actualización" muestra `MAX(published_at)`
+  (cuándo *entró a Gold*, hora Colombia, latido del pipeline). Un evento puede haber ocurrido
+  antes de que USGS lo entregue — ambos cambios son correctos midiendo cosas distintas.
+- Alternativa de sonido opcional ante sismos de severidad crítica o advertencias de tsunami.
+
+---
+
+## 5. IA generativa con control anti-alucinación
+
+```mermaid
+flowchart LR
+    A["1. Métricas exactas<br/>SQL / Python sobre curated.events"] --> B["2. Prompt versionado<br/>airflow/include/ai/prompts/*.md<br/>tokens reemplazados en runtime"]
+    B --> C["3. LLM (Gemini, primario)<br/>solo redacta: usa las cifras entregadas"]
+    C --> D{"4. validate_report_figures()<br/>¿los números del texto coinciden<br/>con los certificados?"}
+    D -->|"✓ VERIFIED"| E["publica: AI_GENERATED<br/>+ modelo, tokens, latencia"]
+    D -->|"✗ MISMATCH<br/>o proveedor caído"| F["5. Motor determinista<br/>DETERMINISTIC_FALLBACK"]
+```
+
+- **Prompts versionados en el repositorio** (`airflow/include/ai/prompts/`, con plantillas
+  sistema/usuario del reporte y del chat): cualquier cambio de prompt es auditable por git.
+- **Ruta de chat (`POST /api/chat`)**: clasifica la intención, consulta Gold con parámetros,
+  inyecta los datos certificados al prompt y responde con las cifras citadas; el frontend
+  siempre pasa por el backend (la key de IA se expone solo dentro de la red Docker).
+- Registro completo de cada generación en `curated.daily_reports`: `generation_status`,
+  tokens y latencia — el detalle de qué se generó y con qué garantías es auditable.
+
+---
+
+## 6. Pantallas y funcionalidad
+
+| Pantalla | Contenido |
+|---|---|
+| **Dashboard** | 6 tarjetas KPI (incl. Puntaje de Calidad y Última Actualización), mapa epicentral interactivo (Leaflet + escala por severidad), actividad por hora/día (eje real según ventana), distribución por magnitud y top regiones — todo refresca en vivo |
+| **Registro de sismos** | Tabla paginada completa (sin filtros de magnitud), ordenada por hora de ocurrencia; los eventos en vivo se anteponen en la página 1 |
+| **Reportes** | Historial de reportes diarios, vista del reporte con métricas y cifras certificadas, regeneración admin, exportación CSV/HTML |
+| **Pipeline & Calidad** | Bronze/Silver/Gold con contadores reales, estado de cada DAG consultado en vivo contra la REST API v2 de Airflow (con degradación controlada a evidencia de BD), y backfill paramétrico para admins |
+| **Chat en vivo (widget flotante)** | Asistente analítico con respuestas fundamentadas solo en datos certificados: estadísticas de sismos, rankings y comparativas en tablas, explicación de la propia plataforma y guardia conversacional que rechaza consultas ajenas sin exponer texto a ningún proveedor IA |
+
+---
+
+## 7. Puesta en marcha
+
+### 7.1 Requisitos
 - Docker Engine 24+ y Docker Compose v2.
-- 4 GB de RAM disponibles (mínimo recomendado para Airflow y PostgreSQL).
-- Ollama instalado en la máquina anfitriona (puerto 11434) con el modelo `llama3.2:1b` o `qwen2.5:3b`.
+- 4 GB RAM disponibles (Airflow + PostgreSQL son los pesados).
+- **Compatible con Windows, Linux y macOS:** el compose usa rutas relativas y volúmenes
+  nombrados; no hay dependencias del sistema anfitrión más allá de Docker. Para detener:
+  `docker compose down` (los datos persisten en los volúmenes).
 
-### 4.2 Paso a Paso de Inicialización
-
-1. **Configurar el archivo de entorno:**
-
-   ```bash
-   cp .env.example .env
-   ```
-2. **Levantar los servicios:**
-
-   ```bash
-   docker compose up -d
-   ```
-3. **Verificar que los contenedores estén saludables:**
-
-   ```bash
-   docker compose ps
-   ```
-
-### 4.3 Puertos y URLs de Acceso
-
-| Servicio                                   | URL Local                                               | Descripción                                                                                                                      |
-| :----------------------------------------- | :------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------------------------------- |
-| **Plataforma Web (SismoWatch UI)**   | [http://localhost:3001](http://localhost:3001)           | Dashboard, Mapa, Monitor SSE, Reportes, Consola de Calidad y Chat IA.                                                             |
-| **API Backend (FastAPI)**            | [http://localhost:8000/docs](http://localhost:8000/docs) | Documentación interactiva Swagger / OpenAPI de los endpoints.                                                                    |
-| **Orquestador (Apache Airflow)**     | [http://localhost:8088](http://localhost:8088)           | Interfaz web de DAGs de Airflow (Usuario: `admin` / Contraseña: `admin_sismowatch`).                                         |
-| **Lakehouse Bronze (MinIO Console)** | [http://localhost:9001](http://localhost:9001)           | Consola Web MinIO S3 (Usuario: `sismowatch_minio_admin` / Pass: `sismowatch_minio_pass_2026`). Bucket: `sismowatch-bronze`. |
-| **Base de Datos (PostgreSQL)**       | `localhost:5434`                                      | Instancia PostgreSQL Medallion con esquemas `raw`, `staging`, `curated`, `auth`.                                          |
-
----
-
-## 5. Modelo de Roles y Credenciales de Demostración
-
-La plataforma incluye una pantalla de acceso con botones de autocompletado rápido para facilitar la evaluación:
-
-| Rol              | Correo Electrónico            | Contraseña            | Permisos y Capacidades                                                                                                                                                                                                    |
-| :--------------- | :----------------------------- | :--------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Admin**  | `admin@sismowatch.internal`  | `AdminSecure2026!*`  | Acceso total al Dashboard, Monitor SSE, exportaciones, consola de calidad, **visualización de registros en cuarentena**, **ejecución de backfill histórico** y **regeneración de reportes con IA**. |
-| **Viewer** | `viewer@sismowatch.internal` | `ViewerSecure2026!*` | Consulta de Dashboard, Mapa, Monitor SSE, lectura y exportación de reportes, resumen del pipeline y chat. **Acciones administrativas y consulta de cuarentena restringidas (HTTP 403)**.                           |
-
-> **Garantía de Seguridad:** La restricción de acceso no depende únicamente de la visibilidad en la interfaz. El backend valida el token JWT en cada invocación; si un usuario con rol *viewer* intenta invocar `/api/quality/quarantine`, `/api/admin/backfill` o `/api/admin/reports/regenerate`, el servidor responde inmediatamente con un **código HTTP 403 Forbidden**.
-
----
-
-## 6. Implementación de Calidad de Datos y Cuarentena
-
-### 6.1 Reglas Geofísicas Evaluadas en Cada Lote
-
-1. `RULE_ID_REQUIRED`: Presencia obligatoria del identificador único del USGS (`id`).
-2. `RULE_TIME_REQUIRED`: Marca de tiempo Unix epoch válida y positiva (`time > 0`).
-3. `RULE_COORDINATES_REQUIRED`: Arreglo de coordenadas con al menos 3 valores numéricos `[longitud, latitud, profundidad]`.
-4. `RULE_LATITUDE_RANGE`: Latitud comprendida en el rango físico $[-90.0, 90.0]$.
-5. `RULE_LONGITUDE_RANGE`: Longitud comprendida en el rango físico $[-180.0, 180.0]$.
-6. `RULE_MAGNITUDE_RANGE`: Magnitud en el intervalo $[-2.0, 10.0]$ (el USGS registra microsismos con magnitudes negativas en sismógrafos de alta sensibilidad; valores mayores a 10.0 se consideran físicamente imposibles).
-7. `RULE_DEPTH_RANGE`: Profundidad hipocentral en el rango $[-5.0, 1000.0]$ km (profundidades negativas corresponden a eventos en edificios volcánicos o canteras sobre el nivel del mar; superiores a 1000 km quedan fuera de la litosfera/manto superior terrestre).
-
-### 6.2 Aislamiento en Cuarentena y Trazabilidad
-
-- Los eventos que incumplen cualquiera de las reglas son derivados a `staging.quarantine_events` junto con el detalle estructurado de las reglas fallidas (`failed_rules`), la corrida de ejecución (`execution_id`) y el payload original íntegro.
-- **Regla Innegociable:** Ningún registro inválido llega jamás a la capa Gold (`curated.events`).
-- Si en un lote el 100% de los datos resulta inválido, el pipeline se declara en estado **BLOCKED**, detiene la publicación y activa una alerta operacional.
-
----
-
-## 7. Automatizaciones con Inteligencia Artificial
-
-### 7.1 Reporte Ejecutivo Diario con IA
-
-- Un DAG diario (o el endpoint administrativo de regeneración) extrae métricas de `curated.events` para el día objetivo.
-- **Principio Antialucinación:** Las cifras matemáticas (total de eventos, magnitud promedio, magnitud máxima, alertas de tsunami, regiones y desglose por severidad) se calculan en SQL/Python antes de invocar al modelo.
-- El LLM local (Ollama) recibe un prompt con los datos certificados y redacta la síntesis ejecutiva.
-- Un validador de contratos verifica que las cifras mencionadas en la redacción coincidan con las calculadas. Si la validación no concuerda o si el servicio de Ollama no responde (timeout de 30s), se activa automáticamente un **motor analítico determinista**, asegurando disponibilidad ininterrumpida.
-
-### 7.2 Detección Analítica de Anomalías (Z-Score)
-
-- Evalúa ventanas móviles de actividad sísmica regional en `curated.events`.
-- Calcula la media y desviación estándar de la frecuencia de eventos por región.
-- Detecta **Enjambres Sísmicos** cuando el Z-Score supera $2.5$ con concentración de eventos.
-- Identifica **Picos de Magnitud** para eventos con $M \ge 6.0$.
-- Registra cada alerta en `curated.anomaly_alerts` con la advertencia explícita de que una anomalía estadística no constituye una predicción de terremotos.
-
-### 7.3 Asistente Conversacional (Chat con Datos Gold)
-
-- El endpoint `POST /api/chat` clasifica la intención de la consulta del usuario, ejecuta consultas parametrizadas sobre `curated.events` e inyecta los resultados en el LLM para responder en lenguaje natural con citas explícitas del periodo y las cifras verificadas.
-
----
-
-## 8. Monitor en Tiempo Real con Server-Sent Events (SSE)
-
-### 8.1 Justificación Técnica de SSE frente a WebSockets
-
-- **Unidireccionalidad:** El monitoreo sísmico emite datos desde el servidor hacia los clientes; no requiere comunicación bidireccional continua.
-- **Simplicidad y Estabilidad:** SSE opera sobre HTTP estándar, sin requerir el apretón de manos (*handshake*) complejo ni la sobrecarga de mantenimiento de sockets de WebSockets.
-- **Reconexión Automática:** La API nativa del navegador (`EventSource`) incorpora reconexión automática en caso de pérdida momentánea de red.
-- En la interfaz web, el monitor muestra un **indicador de baliza en vivo**, reconexión transparente y reproducción opcional de alertas sonoras ante sismos de severidad crítica o advertencias de tsunami.
-
----
-
-## 9. Seguridad y Evidencia de Auditoría
-
-1. **Gestión de Secretos:** Ninguna credencial ni clave privada se encuentra hardcodeada en el código fuente; todo se inyecta mediante variables de entorno controladas por `.env`.
-2. **Menor Privilegio en PostgreSQL:**
-   - `ingest_user`: Escritura limitada a la capa `raw`.
-   - `transform_user`: Lectura en `raw`, lectura/escritura en `staging` y `curated`.
-   - `api_user`: Lectura exclusiva en `curated`, lectura en `staging.quarantine_events` y gestión de sesiones en `auth`.
-3. **Escaneo Estático de Seguridad con Bandit:**
-   ```bash
-   ./.venv/bin/bandit -r api airflow spark -ll
-   ```
-
-   **Resultado:** 0 problemas de severidad Alta o Media detectados.
-4. **Auditoría de Vulnerabilidades de Dependencias con Pip-Audit:**
-   ```bash
-   ./.venv/bin/pip-audit -r requirements.txt
-   ```
-
-   **Resultado:** `No known vulnerabilities found` (0 vulnerabilidades conocidas).
-
----
-
-## 10. Suite de Pruebas Automatizadas
-
-Para ejecutar la suite completa de pruebas unitarias y de integración:
+### 7.2 Inicialización
 
 ```bash
-./.venv/bin/pytest -v
+# 1. Configura tu entorno: crea .env a partir de la plantilla y agrega tu GEMINI_API_KEY
+cp .env.example .env
+#    → obtén la key en https://aistudio.google.com/apikey (solo se usa dentro de la red Docker)
+
+# 2. Levanta todo
+docker compose up -d
+
+# 3. Verifica
+docker compose ps
 ```
 
-### Resultados de la Ejecución de Pruebas
+> El primer arranque genera automáticamente esquemas, roles y usuarios semilla
+> (`db/init/*.sql`) y los DAGs empiezan a correr por su cuenta. Para poblar el histórico
+> con datos certificados inmediatamente, entra como Admin y ejecuta el backfill (sección 8):
+> ```bash
+> curl -X POST http://localhost:8000/api/admin/backfill -H "Authorization: Bearer <jwt_admin>" -H "Content-Type: application/json" -d '{"days": 30, "min_magnitude": 2.5}'
+> ```
 
-```text
-============================= test session starts ==============================
-platform linux -- Python 3.12.3, pytest-9.1.1
-collected 12 items
+### 7.3 URLs y accesos
 
-airflow/tests/test_dag_integrity.py::test_dag_files_exist_and_syntax_valid PASSED [  8%]
-airflow/tests/test_dag_integrity.py::test_dagbag_imports SKIPPED (Airflow container) [ 16%]
-api/tests/test_auth.py::test_password_hashing PASSED                     [ 25%]
-api/tests/test_auth.py::test_jwt_token_flow PASSED                       [ 33%]
-api/tests/test_auth.py::test_unauthenticated_request_rejected PASSED     [ 41%]
-api/tests/test_endpoints.py::test_health_check PASSED                    [ 50%]
-api/tests/test_endpoints.py::test_viewer_forbidden_on_admin_endpoints PASSED [ 58%]
-api/tests/test_endpoints.py::test_chat_ai_fallback_on_ollama_failure PASSED [ 66%]
-spark/tests/test_spark_transformer.py::test_valid_feature_transformation PASSED [ 75%]
-spark/tests/test_spark_transformer.py::test_invalid_feature_rejection PASSED [ 83%]
-spark/tests/test_spark_transformer.py::test_batch_quality_and_quarantine_segregation PASSED [ 91%]
-spark/tests/test_spark_transformer.py::test_idempotency_simulation PASSED [100%]
+| Servicio | URL | Credenciales |
+|---|---|---|
+| **SismoWatch Web** | [http://localhost:3001](http://localhost:3001) | ver sección 8 |
+| **API FastAPI (Swagger)** | [http://localhost:8000/docs](http://localhost:8000/docs) | — |
+| **Airflow UI** | [http://localhost:8088](http://localhost:8088) | `admin` / `admin_sismowatch` |
+| **MinIO Console** (lakehouse Bronze) | [http://localhost:9001](http://localhost:9001) | creds en `.env` |
+| **PostgreSQL** | `localhost:5434` | credenciales en `.env` |
 
-================== 11 passed, 1 skipped in 0.94s ===================
+### 7.4 Usuarios de demostración
+
+| Rol | Correo | Contraseña | Alcance |
+|---|---|---|---|
+| **Admin** | `admin@sismowatch.internal` | `AdminSecure2026!*` | Todo: backfill histórico, regeneración IA, cuarentena, exportación oficial |
+| **Viewer** | `viewer@sismowatch.internal` | `ViewerSecure2026!*` | Dashboard, mapa, stream en vivo, reportes y lectura; los endpoints admin responden **HTTP 403** (verificado por pruebas) |
+
+El RBAC no depende de la UI: el backend valida el JWT y el rol en **cada** invocación.
+
+---
+
+## 8. Backfill histórico paramétrico e idempotente
+
+**Qué hace:** llena el histórico de Gold. Recibe `days` (días hacia atrás) y `min_magnitude`
+y ejecuta el flujo completo en una sola corrida auditable:
+
+```mermaid
+flowchart LR
+    UF[("1. USGS FDSN Query<br/>start = hoy − N días → hoy")] --> MO[("2. Lakehouse MinIO<br/>payload íntegro")]
+    UF --> BR2[("3. Bronze: raw.usgs_earthquakes_raw<br/>ON CONFLICT id — 0 duplicados")]
+    BR2 --> ME[("4. Medallion Bronze→Gold<br/>reglas de calidad + cuarentena")]
+    ME --> QM[("5. quality_metrics<br/>score del lote")]
+    ME --> RES["Respuesta:<br/>ejecutado, periodo,<br/>promoted_to_gold, quarantined"]
 ```
 
-Además, la verificación nativa de carga de DAGs dentro del contenedor oficial de Apache Airflow 3 (`apache/airflow:3.3.2`) certifica:
+**Por qué "idempotente":** si se ejecuta dos veces con los mismos días, el resultado es
+idéntico — cada evento se identifica por el `event_id` del USGS (único por definición) y
+Bronze/Gold usan upserts (`ON CONFLICT … DO NOTHING/UPDATE`). El dato ya cargado no se
+replica; un **rerun** solo revalida y respeta `updated_time` (así, volver a correr un backfill
+cuando hay un error no genera registros dobles ni "revive" el histórico como nuevo).
+Los sismos históricos cargados por backfill **no entran al stream en vivo** (ventana de
+frescura del SSE): solo pintan gráficas y la tabla histórica.
+
+> Requiere rol admin: devuelve **403** para viewers.
+
+---
+
+## 9. Calidad de datos y cuarentena
+
+Reglas evaluadas por lote (implementadas en `airflow/include/quality/quality_checker.py`,
+sin alguna valor física):
+
+1. **ID obligatorio** — el id del USGS debe existir y no ser vacío (dedup global)
+2. **Timestamp válido** — epoch positivo y coherente
+3. **Coordenadas obligatorias** — `[lon, lat, depth]` numéricos
+4. **Latitud** en `[-90, 90]`
+5. **Longitud** en `[-180, 180]`
+6. **Magnitud** en `[-2.0, 10.0]` (el USGS registra microsismos negativos en equipos de alta sensibilidad)
+7. **Profundidad** en `[-5, 1000]` km (los negativos = eventos en edificios volcánicos o canteras)
+
+Cada rechazo se audita en `staging.quarantine_events` con reglas fallidas, `execution_id`
+y payload íntegro original — la acción de cuarentena siempre es revisable, ni un evento se
+descarta silenciosamente.
+
+---
+
+## 10. Detección de anomalías (Z-Score)
+
+- Ventana móvil de frecuencia por región en `curated.events`.
+- **Enjambre sísmico:** Z-Score > 2.5 con concentración espacial y temporal.
+- **Pico de magnitud:** eventos M ≥ 6.0.
+- Cada alerta queda en `curated.anomaly_alerts` con la advertencia explícita: una anomalía
+  estadística **no** es una alerta de terremotos.
+
+---
+
+## 11. Seguridad — evidencia real y reproducible
+
+```bash
+# 1) Escaneo estático (Bandit, umbral Medium+): resultado objetivo actual → 0 Medium / 0 High
+python -m bandit -r api airflow spark -ll
+
+# 2) Vulnerabilidades conocidas de dependencias: → "No known vulnerabilities found"
+python -m pip_audit -r requirements.txt
+```
+
+- **Secretos:** ninguna credencial en el código; todo pasa por `.env` (el `.gitignore` protege el
+  archivo que contiene la key de IA).
+- **BD mínimo privilegio:** esquemas y roles creados por `db/init/01_init_schemas_roles.sql`
+  (`ingest_user`, `transform_user`, `api_user`).
+- **RBAC real:** JWT firmado (HS256, secret en `.env`), expiración 120 min y verificación
+  de rol servidor en cada endpoint administrativo.
+
+---
+
+## 12. Pruebas automatizadas
+
+```bash
+python -m pytest airflow/tests api/tests spark/tests
+```
 
 ```text
-DAGS FOUND: ['usgs_transformation_quality', 'sismowatch_daily_ai_report', 'usgs_earthquake_ingestion']
-IMPORT ERRORS: 0
+airflow\tests\test_dag_integrity.py .s                      # . = pasó, s = DagBag requiere contenedor Airflow
+airflow\tests\test_prompting_and_figures.py ......          # prompts versionados + validador anti-alucinación
+api\tests\test_auth.py ...                                  # hashing bcrypt, flujo JWT, 401
+api\tests\test_chat_routing.py ..............................................  # intents, ventanas temporales, guardia conversacional, tablas certificadas
+api\tests\test_endpoints.py ...                             # health, 403 viewer en admin/endpoints, fallback determinista
+spark\tests\test_spark_transformer.py ....                  # transformación, cuarentena, quality, idempotencia
+
+67 passed, 1 skipped
+```
+
+Dentro del contenedor oficial de Airflow 3 (`apache/airflow:3.3.2`) la carga nativa de DAGs
+verifica: `3 DAGs encontrados, 0 errores de importación`.
+
+---
+
+## 13. Estructura del repositorio
+
+```text
+├── docker-compose.yml           # PostgreSQL + MinIO + Airflow + API + Web (100% portable)
+├── .env.example                 # Plantilla de entorno (la key de IA va vacía)
+├── requirements.txt             # Deps de pruebas/desarrollo (pytest, bandit, pip-audit…)
+├── docs/
+│   └── ARQUITECTURA.md          # Especificación técnica extendida
+├── db/init/                     # DDL + roles mínimo-privilegio + seed users (bcrypt)
+├── airflow/
+│   ├── dags/                    # 3 DAGs: ingesta */5, transformación por Dataset, reporte diario 07:00 Col
+│   ├── include/
+│   │   ├── ingestion/           # cliente USGS + backfill paramétrico
+│   │   ├── quality/             # 7 reglas + cuarentena + score
+│   │   ├── analytics/           # detector Z-Score
+│   │   ├── ai/                  # cliente IA, prompts versionados/ y validador de cifras
+│   │   ├── db.py, config.py     # conexión por rol y configuración central
+│   │   └── storage/             # persistencia MinIO lakehouse
+│   └── tests/
+├── spark/
+│   ├── jobs/process_medallion.py  # medallion core + idempotencia (ON CONFLICT)
+│   └── tests/
+├── api/
+│   ├── app/routers/             # auth, kpis, events, stats, reports, quality, stream (SSE), admin, anomalies
+│   ├── app/services/            # sse_manager.py (stream en vivo), chat_service.py, exportador
+│   ├── app/auth/                # JWT + require_role
+│   └── tests/
+└── web/
+    ├── src/pages/               # LoginPage, DashboardPage, ReportsPage, PipelineQualityPage, ChatAIPage
+    ├── src/components/          # LiveToastNotification, ScreenCrackEffect, EarthquakeMap, FloatingChatWidget, ChatMarkdown…
+    ├── src/services/            # api.ts (cliente tipado), sse.ts (reconexión automática)
+    └── src/context/AuthContext.tsx
 ```
 
 ---
 
-## 11. Guía de Demostración Paso a Paso para la Sustentación
+## 14. Guía rápida de demostración
 
-1. **Acceso Inicial y Prueba de Roles:**
-
-   - Ingrese a [http://localhost:3001](http://localhost:3001).
-   - Haga clic en el botón de demostración **"Rol Viewer"** e inicie sesión.
-   - Navegue a la pestaña **"Pipeline y Calidad"**: observe cómo la sección de cuarentena indica de forma clara y formal que el acceso está restringido a administradores.
-   - Cierre sesión e ingrese con **"Rol Admin"**: visualice cómo se habilitan los controles de backfill histórico, la consola de cuarentena y el botón de regeneración con IA.
-2. **Verificación de Ingesta y Dashboard:**
-
-   - En el Dashboard, examine los KPIs calculados sobre la capa Gold, la distribución de magnitudes y el mapa interactivo.
-   - Pruebe los filtros interactivos por magnitud mínima ($\ge 4.0$) o búsqueda por región (ej. *Chile*, *California*, *Japan*).
-3. **Demostración de Tiempo Real (Monitor SSE):**
-
-   - Acceda a la pestaña **"Monitor en Vivo"**.
-   - Observe la baliza verde parpadeante de conexión activa y el flujo de sismos sin recarga.
-4. **Demostración del Asistente Conversacional (Chat con IA):**
-
-   - Diríjase a la pestaña **"Asistente IA"**.
-   - Haga clic en cualquiera de las preguntas sugeridas (ej. *"¿Cuántos sismos se registraron durante las últimas 24 horas?"* o *"¿Cuál fue la magnitud máxima registrada hoy?"*).
-   - Compruebe cómo la respuesta cita con exactitud matemática las cifras de la capa Gold y detalla la latencia y el modelo utilizado.
-5. **Demostración de Reportes y Exportación:**
-
-   - En la pestaña **"Reportes e IA"**, seleccione un reporte y haga clic en **"Exportar CSV"** y **"Ver / Imprimir HTML"** para comprobar la generación de documentos ejecutivos de alta calidad.
+1. **Prueba de roles:** entre con Viewer → pestaña Pipeline (cuarentena restringida visible) → cierre sesión → entre con Admin (aparecen backfill y cuarentena).
+2. **En vivo:** permanezca en el Dashboard con el stream conectado; cuando llegue el próximo sismo M≥2.5 o tsunami, verá la toast, el efecto de grietas y las estadísticas reflejando el evento en segundos, sin recargar la página.
+3. **IA:** en el widget flotante de chat pregunte (ej. "¿Cuántos sismos hubo en las últimas 24 horas?"), pida una comparativa ("ranking de las regiones con mayor actividad" — responde con tabla), o pregunte por la plataforma ("¿cómo funciona la arquitectura medallion?"). Una consulta ajena ("¿quién ganó el partido?") es rechazada sin exponer el texto a ningún proveedor IA. En Reportes, el Admin puede regenerar el informe (día UTC cerrado, validado anti-alucinación).
+4. **Backfill:** en Pipeline & Calidad, ejecute el backfill paramétrico de N días y compruebe que los contadores de Bronze/Silver/Gold crecen sin duplicar (vuelva a ejecutarlo: mismos números).
+5. **Auditabilidad:** en Pipeline & Calidad, los estados de DAG se consultan en vivo de la REST API de Airflow (SUCCESS/PASSED con tiempos reales).
 
 ---
 
-## 12. Limitaciones Conocidas y Mejoras Futuras en Producción
+## 15. Limitaciones y camino a producción
 
-1. **Clúster Spark Dedicado:** En esta entrega, las transformaciones operan mediante PySpark / motor vectorizado local dentro del contenedor para optimizar recursos y latencia en Docker. En un entorno de producción a gran escala con terabytes de histórico, se integraría un clúster Dataproc o Amazon EMR gestionado.
-2. **Notificaciones Push y Webhooks:** La arquitectura cuenta con el callback `failure_alert_callback` configurado para despachar alertas de error; en producción se conectaría directamente a canales corporativos de Slack, PagerDuty o Telegram.
-3. **Persistencia de Embeddings Vectoriales:** Para búsquedas semánticas sobre comentarios históricos o literatura geológica, se habilitaría la extensión `pgvector` en PostgreSQL.
+1. **Spark clúster dedicado:** hoy PySpark vectorizado en contenedor; a escala de TB → EMR/Dataproc.
+2. **Notificaciones push corporativas:** el `failure_alert_callback` está listo; producción lo conectaría a Slack/PagerDuty/Telegram (webhook configurable vía `ALERT_WEBHOOK_URL`).
+3. **Búsquedas semánticas geológicas:** `pgvector` sobre comentarios históricos de USGS.
+4. **Alta disponibilidad:** Airflow standalone hoy; producción usaría executor Celery/Kubernetes con réplicas de api-server.

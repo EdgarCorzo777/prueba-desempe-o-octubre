@@ -21,6 +21,8 @@ def get_timeseries_stats(
     trunc_unit = 'day' if hours > 48 else 'hour'
     time_format = 'YYYY-MM-DD' if hours > 48 else 'YYYY-MM-DD HH24:00'
     
+    # Los valores interpolados son constantes internas del módulo (enum de agregación),
+    # no provienen de la entrada del usuario; hours llega saneado por Query(ge=1, le=1440).
     query = f"""
     SELECT
         TO_CHAR(DATE_TRUNC('{trunc_unit}', event_time), '{time_format}') as hour_label,
@@ -30,7 +32,7 @@ def get_timeseries_stats(
     WHERE event_time >= %s
     GROUP BY 1
     ORDER BY hour_label ASC;
-    """
+    """  # nosec B608
     
     with db_cursor(as_admin=False, commit=False) as cur:
         cur.execute(query, (since_time,))

@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { api } from '../services/api';
 import { ChatMessage } from '../types';
-import { MessageSquareCode, Send, Sparkles, Cpu, Clock, CheckCircle2, ShieldCheck, CornerDownLeft, Loader2 } from 'lucide-react';
+import { ChatMarkdown } from '../components/ChatMarkdown';
+import { MessageSquareCode, Send, Sparkles, Clock, CheckCircle2, ShieldCheck, CornerDownLeft, Loader2 } from 'lucide-react';
 
 const SUGGESTED_QUESTIONS = [
   '¿Cuántos sismos se registraron durante las últimas 24 horas?',
@@ -17,11 +18,10 @@ export const ChatAIPage: React.FC = () => {
     {
       id: 'welcome',
       sender: 'assistant',
-      text: '¡Hola! Soy SismoWatch AI asistido por Google Gemini. Consulto exclusivamente información analítica certificada para responder tus preguntas operativas sobre actividad sísmica, magnitudes, anomalías y alertas de tsunami.',
+      text: '¡Hola! Soy SismoWatch AI. Consulto exclusivamente información analítica certificada por el sistema para responder tus preguntas operativas sobre actividad sísmica, magnitudes, anomalías, alertas de tsunami y la propia plataforma.',
       timestamp: new Date().toLocaleTimeString(),
       period_consulted: 'Datos en tiempo real',
-      is_fallback: false,
-      ai_model: 'gemini-3.5-flash-lite'
+      is_fallback: false
     }
   ]);
   const [inputQuestion, setInputQuestion] = useState('');
@@ -91,11 +91,11 @@ export const ChatAIPage: React.FC = () => {
             <h2 className="text-sm font-bold text-slate-100 flex items-center gap-2">
               Asistente Conversacional Inteligente
               <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-950 text-cyan-300 border border-cyan-800/80">
-                Google Gemini
+                Analítica Certificada
               </span>
             </h2>
             <p className="text-[11px] text-slate-400 font-mono">
-              Respuestas analíticas redactadas por Google Gemini con cifras matemáticamente certificadas
+              Respuestas analíticas basadas en cifras matemáticamente certificadas por el sistema
             </p>
           </div>
         </div>
@@ -136,7 +136,9 @@ export const ChatAIPage: React.FC = () => {
                   : 'bg-slate-900/90 border border-slate-800 text-slate-200 rounded-bl-none'
               }`}
             >
-              <div className="whitespace-pre-wrap">{msg.text}</div>
+              <div className="whitespace-pre-wrap">
+                <ChatMarkdown text={msg.text} />
+              </div>
 
               {/* Data Grounding & Telemetry Pill for Assistant Messages */}
               {msg.sender === 'assistant' && (
@@ -153,11 +155,6 @@ export const ChatAIPage: React.FC = () => {
                   </div>
 
                   <div className="flex items-center gap-2">
-                    {msg.ai_model && (
-                      <span className="flex items-center gap-1 text-slate-400">
-                        <Cpu className="w-3 h-3 text-cyan-400" /> {msg.ai_model.includes('gemini') ? msg.ai_model : 'gemini:3.5-flash-lite'}
-                      </span>
-                    )}
                     {msg.latency_ms !== undefined && (
                       <span className="flex items-center gap-1 text-slate-500">
                         <Clock className="w-3 h-3" /> {msg.latency_ms} ms
@@ -174,7 +171,7 @@ export const ChatAIPage: React.FC = () => {
         {sending && (
           <div className="flex items-center gap-2 text-xs text-cyan-400 font-mono p-3 rounded-xl bg-slate-900/60 border border-slate-800/80 max-w-sm">
             <Loader2 className="w-4 h-4 animate-spin" />
-            <span>Consultando datos analíticos y redactando con Gemini...</span>
+            <span>Consultando datos analíticos del sistema...</span>
           </div>
         )}
 

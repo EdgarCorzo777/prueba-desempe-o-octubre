@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { api } from '../services/api';
 import { sseService } from '../services/sse';
 import { KPIStats, SeismicEvent, TimeSeriesPoint, MagnitudeDistItem, RegionCountItem } from '../types';
@@ -13,18 +13,14 @@ export const DashboardPage: React.FC = () => {
   const [timeseries, setTimeseries] = useState<TimeSeriesPoint[]>([]);
   const [magDist, setMagDist] = useState<MagnitudeDistItem[]>([]);
   const [topRegions, setTopRegions] = useState<RegionCountItem[]>([]);
+  // Timeframe: 24 (24 Horas), 168 (7 Días), 720 (30 Días)
+  const [timeframeHours, setTimeframeHours] = useState<number>(720);
+
   const [selectedEvent, setSelectedEvent] = useState<SeismicEvent | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Timeframe: 24 (24 Horas), 168 (7 Días), 720 (30 Días)
-  const [timeframeHours, setTimeframeHours] = useState<number>(720);
-
-  // Filters
-  const [eventCategory, setEventCategory] = useState<'all' | 'sismo' | 'tsunami'>('all');
-  const [minMag, setMinMag] = useState<number>(4.5);
-  const [regionQuery, setRegionQuery] = useState<string>('');
   const [page, setPage] = useState<number>(1);
   const [totalPages, setTotalPages] = useState<number>(1);
   const [totalEventsCount, setTotalEventsCount] = useState<number>(0);
@@ -36,9 +32,6 @@ export const DashboardPage: React.FC = () => {
       const [kpiRes, eventsRes, tsRes, distRes, regRes] = await Promise.all([
         api.getKpis(timeframeHours),
         api.getEvents({
-          min_magnitude: minMag > 0 ? minMag : undefined,
-          region: regionQuery,
-          event_category: eventCategory,
           page,
           page_size: PAGE_SIZE,
         }),
@@ -63,15 +56,57 @@ export const DashboardPage: React.FC = () => {
 
   useEffect(() => {
     fetchData();
-  }, [timeframeHours, eventCategory, minMag, regionQuery, page]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timeframeHours, page]);
 
+  // Cambiar la ventana temporal reinicia la paginación.
+  // NOTA: separado del efecto anterior — el reset dentro del efecto que depende
+  // de `page` hacía que "Anterior/Siguiente" volvieran inmediatamente a la página 1.
   useEffect(() => {
+    setPage(1);
+  }, [timeframeHours]);
+
+  // Refresco silencioso ante eventos en vivo (SSE): actualiza KPIs y gráficas
+  // sin recargar la pantalla ni disparar el estado de loading.
+  const quietTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const quietRefresh = async () => {
+      try {
+        const [kpiRes, tsRes, distRes, regRes] = await Promise.all([
+          api.getKpis(timeframeHours),
+          api.getTimeSeries(timeframeHours),
+          api.getMagnitudeDistribution(timeframeHours),
+          api.getTopRegions(timeframeHours, 5),
+        ]);
+        setKpis(kpiRes);
+        setTimeseries(tsRes);
+        setMagDist(distRes);
+        setTopRegions(regRes);
+      } catch {
+        // Silencioso: ante fallo puntual se conservan los datos vigentes.
+      }
+    };
+
     const unsubscribe = sseService.subscribe((newEvent) => {
-      setEvents((prev) => [newEvent, ...prev.slice(0, PAGE_SIZE - 1)]);
       setTotalEventsCount((c) => c + 1);
+      // Solo la página 1 recibe el evento en vivo al tope de la tabla;
+      // en otras páginas no corresponde mezclar el recién llegado.
+      if (page === 1) {
+        setEvents((prev) => [newEvent, ...prev.slice(0, PAGE_SIZE - 1)]);
+      }
+      // Debounce ~1.5 s: agrupa ráfagas de eventos y refresca estadísticas una sola vez.
+      if (quietTimer.current) {
+        clearTimeout(quietTimer.current);
+      }
+      quietTimer.current = setTimeout(quietRefresh, 1500);
     });
-    return () => unsubscribe();
-  }, []);
+    return () => {
+      unsubscribe();
+      if (quietTimer.current) {
+        clearTimeout(quietTimer.current);
+      }
+    };
+  }, [timeframeHours, page]);
 
   if (loading && !kpis) {
     return <LoadingView message="Cargando telemetría del Observatorio Global SismoWatch..." />;
@@ -82,10 +117,27 @@ export const DashboardPage: React.FC = () => {
   }
 
   // Distribution calculations using severity enum: LOW (<4), MODERATE (4-5), HIGH/CRITICAL (5+)
-  const microCount = magDist.filter((d) => d.severity === 'LOW').reduce((a, b) => a + b.count, 0) || 850;
-  const minorCount = magDist.filter((d) => d.severity === 'MODERATE').reduce((a, b) => a + b.count, 0) || 480;
-  const majorCount = magDist.filter((d) => d.severity === 'HIGH' || d.severity === 'CRITICAL').reduce((a, b) => a + b.count, 0) || 98;
+  const microCount = magDist.filter((d) => d.severity === 'LOW').reduce((a, b) => a + b.count, 0);
+  const minorCount = magDist.filter((d) => d.severity === 'MODERATE').reduce((a, b) => a + b.count, 0);
+  const majorCount = magDist.filter((d) => d.severity === 'HIGH' || d.severity === 'CRITICAL').reduce((a, b) => a + b.count, 0);
   const distTotal = Math.max(1, microCount + minorCount + majorCount);
+
+  // Serie temporal: el backend agrega por día si la ventana supera 48 h, por hora en caso contrario.
+  const isDailySeries = timeframeHours > 48;
+  const tsSlice = timeseries.slice(-10);
+  const tsMax = Math.max(1, ...timeseries.map((t) => t.count));
+  const fmtAxisLabel = (hourStr: string) => {
+    if (!hourStr) return '—';
+    if (isDailySeries) {
+      const d = new Date(`${hourStr}T12:00:00`);
+      return isNaN(d.getTime())
+        ? hourStr.slice(5)
+        : d.toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }); // "29 oct."
+    }
+    // Punto horario "YYYY-MM-DD HH:00" -> "HH:00"
+    const parts = hourStr.split(' ');
+    return parts.length > 1 ? parts[1].trim() : hourStr.slice(-5);
+  };
 
   return (
     <div className="flex flex-col w-full max-w-7xl mx-auto px-margin py-space-lg space-y-space-xl">
@@ -125,51 +177,18 @@ export const DashboardPage: React.FC = () => {
           </button>
         </div>
 
-        {/* Filters & Search */}
-        <div className="flex flex-wrap items-center gap-space-sm">
-          <div className="relative flex-1 sm:flex-initial">
-            <span className="material-symbols-outlined absolute left-3 top-2.5 text-outline text-[18px]">
-              search
-            </span>
-            <input
-              className="w-full sm:w-64 bg-surface-container border border-outline-variant rounded-lg pl-10 pr-4 py-2 text-body-md text-on-surface focus:outline-none focus:border-primary font-label-md"
-              placeholder="Buscar ubicación o región..."
-              type="text"
-              value={regionQuery}
-              onChange={(e) => { setRegionQuery(e.target.value); setPage(1); }}
-            />
-          </div>
-
-          <div className="flex items-center space-x-space-xs bg-surface-container px-3 py-1.5 rounded-lg border border-outline-variant">
-            <span className="text-label-sm text-on-surface-variant">Categoría:</span>
-            <select
-              className="bg-transparent text-label-md text-primary focus:outline-none cursor-pointer"
-              value={eventCategory}
-              onChange={(e) => { setEventCategory(e.target.value as any); setPage(1); }}
-            >
-              <option value="all" className="bg-surface-container">Todos</option>
-              <option value="sismo" className="bg-surface-container">Sismos</option>
-              <option value="tsunami" className="bg-surface-container">Tsunamis</option>
-            </select>
-          </div>
-
-          <div className="flex items-center space-x-space-xs bg-surface-container px-3 py-1.5 rounded-lg border border-outline-variant">
-            <span className="text-label-sm text-on-surface-variant">M &gt;= {minMag.toFixed(1)}</span>
-            <input
-              className="w-20 accent-primary-container cursor-pointer"
-              max="8.0"
-              min="1.0"
-              step="0.5"
-              type="range"
-              value={minMag}
-              onChange={(e) => { setMinMag(parseFloat(e.target.value)); setPage(1); }}
-            />
-          </div>
+        {/* Live Indicator */}
+        <div className="flex items-center space-x-space-sm text-label-md text-on-surface-variant font-mono">
+          <span className="relative flex h-2.5 w-2.5">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60"></span>
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+          </span>
+          <span>En vivo · registro completo de la Red Global</span>
         </div>
       </div>
 
-      {/* 4 Stat Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-space-md">
+      {/* KPI Stat Cards (6) */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-space-md">
         {/* Stat 1: Total Eventos */}
         <div className="bg-surface-container-low p-space-lg rounded-xl shadow-lg relative overflow-hidden group hover:translate-y-[-2px] transition-transform border border-outline-variant/20">
           <div className="absolute top-0 right-0 w-24 h-24 bg-primary/5 rounded-bl-full pointer-events-none"></div>
@@ -185,7 +204,9 @@ export const DashboardPage: React.FC = () => {
             <span className="text-headline-lg font-headline-lg text-primary">
               {kpis?.total_events_24h.toLocaleString() || '0'}
             </span>
-            <span className="text-label-sm text-emerald-400 font-label-sm">+12% vs ayer</span>
+          </div>
+          <div className="text-label-sm text-on-surface-variant mt-1">
+            Frescura: {kpis?.freshness_delay_minutes !== undefined ? kpis.freshness_delay_minutes.toFixed(1) : '—'} min
           </div>
         </div>
 
@@ -210,7 +231,7 @@ export const DashboardPage: React.FC = () => {
               M {kpis?.max_magnitude_24h !== undefined ? kpis.max_magnitude_24h.toFixed(1) : '0.0'}
             </span>
             <span className="text-label-sm text-on-surface-variant font-label-sm truncate max-w-[120px]">
-              {events[0]?.place || 'Costa Pacífica'}
+              {kpis?.max_magnitude_place || '—'}
             </span>
           </div>
         </div>
@@ -230,7 +251,9 @@ export const DashboardPage: React.FC = () => {
             <span className="text-headline-lg font-headline-lg text-secondary">
               M {kpis?.avg_magnitude_24h !== undefined ? kpis.avg_magnitude_24h.toFixed(1) : '0.0'}
             </span>
-            <span className="text-label-sm text-on-surface-variant font-label-sm">Estable</span>
+          </div>
+          <div className="text-label-sm text-on-surface-variant mt-1">
+            Ventana: últimas {timeframeHours} h
           </div>
         </div>
 
@@ -270,6 +293,66 @@ export const DashboardPage: React.FC = () => {
             >
               {kpis && kpis.tsunami_alerts_24h > 0 ? 'Activa' : 'Seguro'}
             </span>
+          </div>
+        </div>
+
+        {/* Stat 5: Puntaje de Calidad */}
+        <div
+          className={`bg-surface-container-low p-space-lg rounded-xl shadow-lg relative overflow-hidden group hover:translate-y-[-2px] transition-transform border ${
+            kpis && kpis.quality_score >= 90 ? 'border-emerald-500/40' : kpis ? 'border-amber-500/40' : 'border-outline-variant/20'
+          }`}
+        >
+          <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-500/5 rounded-bl-full pointer-events-none"></div>
+          <div className="flex items-center justify-between mb-space-sm">
+            <span className="text-label-md text-on-surface-variant uppercase tracking-widest font-label-md">
+              Puntaje Calidad
+            </span>
+            <div
+              className={`w-8 h-8 rounded-lg flex items-center justify-center shadow-sm ${
+                kpis && kpis.quality_score >= 90
+                  ? 'bg-emerald-500/10 text-emerald-400'
+                  : 'bg-surface-container text-amber-400'
+              }`}
+            >
+              <span className="material-symbols-outlined text-[18px]">verified</span>
+            </div>
+          </div>
+          <div className="flex items-baseline space-x-space-sm">
+            <span
+              className={`text-headline-lg font-headline-lg ${
+                kpis && kpis.quality_score >= 90 ? 'text-emerald-400' : 'text-amber-400'
+              }`}
+            >
+              {kpis?.quality_score !== undefined ? `${kpis.quality_score.toFixed(1)}%` : '—'}
+            </span>
+          </div>
+          <div className="text-label-sm text-on-surface-variant mt-1">
+            Registros validados vs cuarentena
+          </div>
+        </div>
+
+        {/* Stat 6: Última Actualización */}
+        <div className="bg-surface-container-low p-space-lg rounded-xl shadow-lg relative overflow-hidden group hover:translate-y-[-2px] transition-transform border border-outline-variant/20">
+          <div className="absolute top-0 right-0 w-24 h-24 bg-secondary/5 rounded-bl-full pointer-events-none"></div>
+          <div className="flex items-center justify-between mb-space-sm">
+            <span className="text-label-md text-on-surface-variant uppercase tracking-widest font-label-md">
+              Última Actualización
+            </span>
+            <div className="w-8 h-8 rounded-lg bg-surface-container flex items-center justify-center text-secondary shadow-sm">
+              <span className="material-symbols-outlined text-[18px]">schedule</span>
+            </div>
+          </div>
+          <div className="flex items-baseline space-x-space-sm">
+            <span className="text-headline-lg font-headline-lg text-secondary font-mono text-[1.75rem]">
+              {kpis?.last_data_update
+                ? new Date(kpis.last_data_update).toLocaleTimeString('es-CO', { hour12: false })
+              : '—'}
+            </span>
+          </div>
+          <div className="text-label-sm text-on-surface-variant mt-1 truncate">
+            {kpis?.last_data_update
+              ? `${new Date(kpis.last_data_update).toLocaleDateString('es-CO')} · hora local`
+              : 'Sin cargas registradas'}
           </div>
         </div>
       </div>
@@ -319,14 +402,15 @@ export const DashboardPage: React.FC = () => {
         {/* Chart 1: Hourly Activity */}
         <div className="bg-surface-container-low p-space-lg rounded-xl shadow-xl flex flex-col justify-between border border-outline-variant/20">
           <div className="flex items-center justify-between mb-space-md">
-            <div className="text-headline-sm font-headline-sm text-on-surface">Actividad por Hora</div>
+            <div className="text-headline-sm font-headline-sm text-on-surface">
+            {isDailySeries ? 'Actividad por Día' : 'Actividad por Hora'}
+          </div>
             <span className="material-symbols-outlined text-primary">show_chart</span>
           </div>
           <div className="h-48 flex items-end justify-between gap-1 pt-4 px-2">
-            {timeseries.length > 0
-              ? timeseries.slice(-10).map((pt, i) => {
-                  const maxCount = Math.max(1, ...timeseries.map((t) => t.count));
-                  const heightPercent = Math.max(15, Math.min(100, Math.round((pt.count / maxCount) * 100)));
+            {tsSlice.length > 0
+              ? tsSlice.map((pt, i) => {
+                  const heightPercent = Math.max(15, Math.min(100, Math.round((pt.count / tsMax) * 100)));
                   return (
                     <div
                       key={i}
@@ -340,19 +424,30 @@ export const DashboardPage: React.FC = () => {
                     </div>
                   );
                 })
-              : [30, 45, 25, 60, 85, 100, 70, 40].map((h, i) => (
-                  <div key={i} className="w-full bg-surface-container rounded-t flex flex-col justify-end h-full group">
-                    <div
-                      className="w-full bg-primary/40 rounded-t group-hover:bg-primary transition-colors"
-                      style={{ height: `${h}%` }}
-                    ></div>
+              : (
+                  <div className="w-full h-full flex items-center justify-center">
+                    <p className="text-label-md text-on-surface-variant text-center">
+                      Sin actividad registrada en la ventana seleccionada
+                    </p>
                   </div>
-                ))}
+                )}
           </div>
           <div className="flex justify-between text-label-sm text-on-surface-variant mt-2 pt-2 border-t border-outline-variant">
-            <span>00:00</span>
-            <span>12:00</span>
-            <span>23:59</span>
+            {tsSlice.length > 0 ? (
+              <>
+                <span>{fmtAxisLabel(tsSlice[0].hour)}</span>
+                {tsSlice.length >= 3 && (
+                  <span>{fmtAxisLabel(tsSlice[Math.floor((tsSlice.length - 1) / 2)].hour)}</span>
+                )}
+                <span>{fmtAxisLabel(tsSlice[tsSlice.length - 1].hour)}</span>
+              </>
+            ) : (
+              <>
+                <span>—</span>
+                <span>—</span>
+                <span>—</span>
+              </>
+            )}
           </div>
         </div>
 
@@ -432,35 +527,11 @@ export const DashboardPage: React.FC = () => {
                 );
               })
             ) : (
-              <>
-                <div>
-                  <div className="flex justify-between text-body-md mb-1">
-                    <span className="text-on-surface font-medium">1. Anillo de Fuego del Pacífico</span>
-                    <span className="text-primary font-bold">420</span>
-                  </div>
-                  <div className="w-full h-1.5 bg-surface-container rounded-full overflow-hidden">
-                    <div className="bg-primary h-full w-[90%] rounded-full"></div>
-                  </div>
-                </div>
-                <div>
-                  <div className="flex justify-between text-body-md mb-1">
-                    <span className="text-on-surface font-medium">2. Fosa de Japón</span>
-                    <span className="text-secondary font-bold">310</span>
-                  </div>
-                  <div className="w-full h-1.5 bg-surface-container rounded-full overflow-hidden">
-                    <div className="bg-secondary h-full w-[70%] rounded-full"></div>
-                  </div>
-                </div>
-                <div>
-                  <div className="flex justify-between text-body-md mb-1">
-                    <span className="text-on-surface font-medium">3. Dorsal Mesoceánica</span>
-                    <span className="text-orange-400 font-bold">185</span>
-                  </div>
-                  <div className="w-full h-1.5 bg-surface-container rounded-full overflow-hidden">
-                    <div className="bg-orange-400 h-full w-[45%] rounded-full"></div>
-                  </div>
-                </div>
-              </>
+              <div className="flex items-center justify-center py-6">
+                <p className="text-label-md text-on-surface-variant text-center">
+                  Sin regiones activas en la ventana seleccionada
+                </p>
+              </div>
             )}
           </div>
           <div className="text-label-sm text-on-surface-variant pt-2 border-t border-outline-variant mt-4">

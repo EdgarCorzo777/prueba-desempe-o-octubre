@@ -49,19 +49,20 @@ default_args = {
 with DAG(
     dag_id="sismowatch_daily_ai_report",
     default_args=default_args,
-    description="Generación diaria de informe ejecutivo con IA local anclada a Gold",
-    schedule="@daily",
+    description="Informe ejecutivo diario del último día UTC completo, generado con IA anclada a Gold",
+    schedule="0 12 * * *",  # 12:00 UTC = 07:00 Colombia, todos los días
     start_date=datetime(2026, 1, 1),
     catchup=False,
     max_active_runs=1,
     tags=["sismowatch", "analytics", "ai", "gold"],
     doc_md="""
     # DAG de Reporte Diario Asistido por IA
+    - Corre diariamente a las 07:00 (hora Colombia, 12:00 UTC).
+    - Reporta el día UTC completo anterior (T-1), nunca un día parcialmente iniciado.
     - Lee exclusivamente de `curated.events`.
-    - Calcula métricas analíticas exactas (SQL/Python).
-    - Solicita redacción ejecutiva al LLM local (Ollama).
-    - Valida consistencia numérica contra alucinaciones.
-    - Aplica generador determinista si Ollama falla o no responde.
+    - Calcula métricas analíticas exactas (SQL/Python) y usa prompts versionados.
+    - Valida consistencia numérica contra alucinaciones antes de publicar.
+    - Aplica generador determinista si el proveedor de IA falla o no responde.
     """
 ) as dag:
 
