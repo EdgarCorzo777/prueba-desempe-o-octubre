@@ -1,0 +1,158 @@
+services:
+  # ----------------------------------------------------------------------------
+  # 0. Lakehouse Object Storage (Capa Bronze NoSQL): MinIO S3
+  # ----------------------------------------------------------------------------
+  minio:
+    image: alpine/minio:latest-release
+    container_name: sismowatch_minio
+    restart: always
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-sismowatch_minio_admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-sismowatch_minio_pass_2026}
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - sismowatch_net
+
+  # ----------------------------------------------------------------------------
+  # 1. Almacenamiento Medallion: PostgreSQL 16
+  # ----------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: sismowatch_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sismowatch_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sismowatch_db_pass_2026}
+      POSTGRES_DB: ${POSTGRES_DB:-sismowatch_db}
+    ports:
+      - "${POSTGRES_EXTERNAL_PORT:-5434}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sismowatch_net
+
+  # ----------------------------------------------------------------------------
+  # 2. Orquestador: Apache Airflow 3.3.2 (Standalone Mode)
+  # ----------------------------------------------------------------------------
+  airflow:
+    image: apache/airflow:3.3.2
+    container_name: sismowatch_airflow
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-sismowatch_admin}:${POSTGRES_PASSWORD:-sismowatch_db_pass_2026}@postgres:5432/${POSTGRES_DB:-sismowatch_db}
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLbfzqJZPo=}
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-sismowatch_airflow_secret_key_32bytes_min_len}
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_WWW_USER_USERNAME:-admin}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_WWW_USER_PASSWORD:-admin_sismowatch}
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/simple_auth_manager_passwords.json
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-sismowatch_db}
+      INGESTION_USER: ${INGESTION_USER:-ingest_user}
+      INGESTION_PASSWORD: ${INGESTION_PASSWORD:-ingest_secret_2026}
+      TRANSFORM_USER: ${TRANSFORM_USER:-transform_user}
+      TRANSFORM_PASSWORD: ${TRANSFORM_PASSWORD:-transform_secret_2026}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:1b}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-sismowatch_minio_admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-sismowatch_minio_pass_2026}
+      MINIO_BUCKET: ${MINIO_BUCKET:-sismowatch-bronze}
+      PYTHONPATH: /opt/airflow:/opt/airflow/include
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./airflow/simple_auth_manager_passwords.json:/opt/airflow/simple_auth_manager_passwords.json:ro
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/include:/opt/airflow/include
+      - ./spark:/opt/airflow/spark
+      - ./logs/airflow:/opt/airflow/logs
+    ports:
+      - "${AIRFLOW_PORT:-8088}:8080"
+    command: standalone
+    networks:
+      - sismowatch_net
+
+  # ----------------------------------------------------------------------------
+  # 3. API Backend: FastAPI (Python 3.12, JWT, SSE, RBAC)
+  # ----------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    container_name: sismowatch_api
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-sismowatch_db}
+      API_USER: ${API_USER:-api_user}
+      API_PASSWORD: ${API_PASSWORD:-api_secret_2026}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-sismowatch_jwt_secret_token_secure_key_hash_2026_xyz}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-120}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@sismowatch.internal}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-AdminSecure2026!*}
+      VIEWER_EMAIL: ${VIEWER_EMAIL:-viewer@sismowatch.internal}
+      VIEWER_PASSWORD: ${VIEWER_PASSWORD:-ViewerSecure2026!*}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:1b}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-sismowatch_minio_admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-sismowatch_minio_pass_2026}
+      MINIO_BUCKET: ${MINIO_BUCKET:-sismowatch-bronze}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${API_PORT:-8000}:8000"
+    networks:
+      - sismowatch_net
+
+  # ----------------------------------------------------------------------------
+  # 4. Frontend Web: React + TypeScript + Vite + Tailwind CSS
+  # ----------------------------------------------------------------------------
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: sismowatch_web
+    restart: always
+    depends_on:
+      - api
+    ports:
+      - "${WEB_PORT:-3001}:80"
+    networks:
+      - sismowatch_net
+
+volumes:
+  postgres_data:
+    name: sismowatch_postgres_data
+  minio_data:
+    name: sismowatch_minio_data
+
+networks:
+  sismowatch_net:
+    name: sismowatch_network
+    driver: bridge
