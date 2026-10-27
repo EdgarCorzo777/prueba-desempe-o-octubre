@@ -1,7 +1,7 @@
 # SismoWatch — Plataforma de Monitoreo Sísmico Global
 
 > Observatorio de datos con ingesta continua del USGS, pipeline Medallion orquestado con Apache Airflow,
-> calidad de datos con cuarentena, IA generativa con anti-alucinación verificada, detección de anomalías
+> calidad de datos auditada, IA generativa con anti-alucinación verificada, detección de anomalías
 > estadísticas y radio en tiempo real vía SSE — todo dockerizado y con control de acceso por roles.
 
 ---
@@ -15,7 +15,7 @@ SismoWatch convierte los feeds públicos del **USGS (United States Geological Su
 |---|---|
 | Monitoreo en vivo | Notificaciones SSE y actualización silenciosa de KPIs/gráficas sin recargar la página (~2.4 s de punta a punta) |
 | Histórico estructurado | Arquitectura Medallion (Bronze → Silver → Gold) sobre PostgreSQL con idempotencia garantizada |
-| Calidad auditada | 7 reglas geofísicas por lote, cuarentena trazable y score de calidad expuesto en la UI |
+| Calidad auditada | 7 reglas geofísicas por lote, auditoría completa de rechazos y score de calidad expuesto en la UI |
 | IA confiable | Reportes ejecutivos y chat con cifras **calculadas en SQL** y validadas contra alucinaciones |
 | Anomalías | Detector Z-Score para enjambres sísmicos y picos de magnitud M≥6.0 |
 | Historia masiva | Backfill paramétrico idempotente de 1 a 60 días (botón admin o CLI; default 30) |
@@ -40,7 +40,7 @@ flowchart LR
     subgraph DB["🐘 PostgreSQL — Capas Medallion"]
         BR[(Bronze<br/>raw.usgs_earthquakes_raw)]
         SI[(Silver<br/>staging.usgs_earthquakes_staging)]
-        CO[(Staging Cuarentena<br/>staging.quarantine_events)]
+        CO[(Eventos rechazados<br/>aislados y auditados en staging)]
         GO[(Gold<br/>curated.events + KPIs + reportes<br/>+ anomalías + quality_metrics)]
     end
 
@@ -91,7 +91,7 @@ flowchart TB
     subgraph Silver["🥈 Silver — staging (conformado)"]
         direction LR
         S1[("staging.usgs_earthquakes_staging<br/>normalizado, tipado, deduplicado")]
-        S2[("staging.quarantine_events<br/>rechazados + motivo + payload")]
+        S2[("Auditoría de rechazos<br/>motivo de descarte + payload completo")]
     end
 
     subgraph Gold["🥇 Gold — curated (producto de datos)"]
@@ -233,7 +233,7 @@ mostrados son los defaults de la plantilla de demostración.
 
 | Rol | Correo | Contraseña | Alcance |
 |---|---|---|---|
-| **Admin** | `admin@sismowatch.internal` | `AdminSecure2026!*` | Todo: backfill histórico, regeneración IA, cuarentena, exportación oficial |
+| **Admin** | `admin@sismowatch.internal` | `AdminSecure2026!*` | Todo: backfill histórico, regeneración IA, exportación oficial |
 | **Viewer** | `viewer@sismowatch.internal` | `ViewerSecure2026!*` | Dashboard, mapa, stream en vivo, reportes y lectura; los endpoints admin responden **HTTP 403** (verificado por pruebas) |
 
 El RBAC no depende de la UI: el backend valida el JWT y el rol en **cada** invocación.
@@ -323,9 +323,9 @@ y ejecuta el flujo completo en una sola corrida auditable:
 flowchart LR
     UF[("1. USGS FDSN Query<br/>start = hoy − N días → hoy")] --> MO[("2. Lakehouse MinIO<br/>payload íntegro")]
     UF --> BR2[("3. Bronze: raw.usgs_earthquakes_raw<br/>ON CONFLICT id — 0 duplicados")]
-    BR2 --> ME[("4. Medallion Bronze→Gold<br/>reglas de calidad + cuarentena")]
+    BR2 --> ME[("4. Medallion Bronze→Gold<br/>reglas de calidad + auditoría")]
     ME --> QM[("5. quality_metrics<br/>score del lote")]
-    ME --> RES["Respuesta:<br/>ejecutado, periodo,<br/>promoted_to_gold, quarantined"]
+    ME --> RES["Respuesta:<br/>ejecutado, periodo,<br/>promoted_to_gold"]
 ```
 
 **Por qué "idempotente":** si se ejecuta dos veces con los mismos días, el resultado es
@@ -340,7 +340,7 @@ frescura del SSE): solo pintan gráficas y la tabla histórica.
 
 ---
 
-## 9. Calidad de datos y cuarentena
+## 9. Calidad de datos
 
 Reglas evaluadas por lote (implementadas en `airflow/include/quality/quality_checker.py`,
 sin alguna valor física):
@@ -353,9 +353,8 @@ sin alguna valor física):
 6. **Magnitud** en `[-2.0, 10.0]` (el USGS registra microsismos negativos en equipos de alta sensibilidad)
 7. **Profundidad** en `[-5, 1000]` km (los negativos = eventos en edificios volcánicos o canteras)
 
-Cada rechazo se audita en `staging.quarantine_events` con reglas fallidas, `execution_id`
-y payload íntegro original — la acción de cuarentena siempre es revisable, ni un evento se
-descarta silenciosamente.
+Cada rechazo queda auditado con las reglas fallidas, el `execution_id` y el payload
+íntegro original — ni un evento se descarta silenciosamente.
 
 ---
 
@@ -400,7 +399,7 @@ airflow\tests\test_prompting_and_figures.py ......          # prompts versionado
 api\tests\test_auth.py ...                                  # hashing bcrypt, flujo JWT, 401
 api\tests\test_chat_routing.py ..............................................  # intents, ventanas temporales, guardia conversacional, tablas certificadas
 api\tests\test_endpoints.py ...                             # health, 403 viewer en admin/endpoints, fallback determinista
-spark\tests\test_spark_transformer.py ....                  # transformación, cuarentena, quality, idempotencia
+spark\tests\test_spark_transformer.py ....                  # transformación, quality, idempotencia
 
 67 passed, 1 skipped
 ```
@@ -423,7 +422,7 @@ verifica: `3 DAGs encontrados, 0 errores de importación`.
 │   ├── dags/                    # 3 DAGs: ingesta */5, transformación por Dataset, reporte diario 07:00 Col
 │   ├── include/
 │   │   ├── ingestion/           # cliente USGS + backfill paramétrico
-│   │   ├── quality/             # 7 reglas + cuarentena + score
+│   │   ├── quality/             # 7 reglas + auditoría de rechazos + score
 │   │   ├── analytics/           # detector Z-Score
 │   │   ├── ai/                  # cliente IA, prompts versionados/ y validador de cifras
 │   │   ├── db.py, config.py     # conexión por rol y configuración central
@@ -448,7 +447,7 @@ verifica: `3 DAGs encontrados, 0 errores de importación`.
 
 ## 14. Guía rápida de demostración
 
-1. **Prueba de roles:** entre con Viewer → pestaña Pipeline (cuarentena restringida visible) → cierre sesión → entre con Admin (aparecen backfill y cuarentena).
+1. **Prueba de roles:** entre con Viewer → pestaña Pipeline (acciones de calidad restringidas visibles) → cierre sesión → entre con Admin (aparecen backfill y regeneración IA).
 2. **En vivo:** permanezca en el Dashboard con el stream conectado; cuando llegue el próximo sismo M≥2.5 o tsunami, verá la toast, el efecto de grietas y las estadísticas reflejando el evento en segundos, sin recargar la página.
 3. **IA:** en el widget flotante de chat pregunte (ej. "¿Cuántos sismos hubo en las últimas 24 horas?"), pida una comparativa ("ranking de las regiones con mayor actividad" — responde con tabla), o pregunte por la plataforma ("¿cómo funciona la arquitectura medallion?"). Una consulta ajena ("¿quién ganó el partido?") es rechazada sin exponer el texto a ningún proveedor IA. En Reportes, el Admin puede regenerar el informe (día UTC cerrado, validado anti-alucinación).
 4. **Backfill:** en Pipeline & Calidad, ejecute el backfill paramétrico de N días y compruebe que los contadores de Bronze/Silver/Gold crecen sin duplicar (vuelva a ejecutarlo: mismos números).
