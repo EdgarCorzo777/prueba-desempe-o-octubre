@@ -19,6 +19,7 @@ SismoWatch convierte los feeds públicos del **USGS (United States Geological Su
 | IA confiable | Reportes ejecutivos y chat con cifras **calculadas en SQL** y validadas contra alucinaciones |
 | Anomalías | Detector Z-Score para enjambres sísmicos y picos de magnitud M≥6.0 |
 | Historia masiva | Backfill paramétrico idempotente de 1 a 60 días (botón admin o CLI; default 30) |
+| Catálogo de datos | OpenMetadata 2.0.7 incluido en el mismo `docker compose up -d`: descubre, documenta y perfila las tablas del Medallion con acceso solo-lectura |
 
 ---
 
@@ -187,7 +188,8 @@ flowchart LR
 
 ### 7.1 Requisitos
 - Docker Engine 24+ y Docker Compose v2.
-- 4 GB RAM disponibles (Airflow + PostgreSQL son los pesados).
+- **8 GB RAM disponibles** (Airflow + PostgreSQL pesan ~4 GB; OpenMetadata añade
+  MySQL + Elasticsearch + JVM, ~4–6 GB más).
 - **Compatible con Windows, Linux y macOS:** el compose usa rutas relativas y volúmenes
   nombrados; no hay dependencias del sistema anfitrión más allá de Docker. Para detener:
   `docker compose down` (los datos persisten en los volúmenes).
@@ -220,8 +222,12 @@ docker compose ps
 | **SismoWatch Web** | [http://localhost:3001](http://localhost:3001) | ver sección 8 |
 | **API FastAPI (Swagger)** | [http://localhost:8000/docs](http://localhost:8000/docs) | — |
 | **Airflow UI** | [http://localhost:8088](http://localhost:8088) | `admin` / `admin_sismowatch` |
-| **MinIO Console** (lakehouse Bronze) | [http://localhost:9001](http://localhost:9001) | creds en `.env` |
-| **PostgreSQL** | `localhost:5434` | credenciales en `.env` |
+| **MinIO Console** (lakehouse Bronze) | [http://localhost:9001](http://localhost:9001) | `sismowatch_minio_admin` / `sismowatch_minio_pass_2026` |
+| **PostgreSQL** | `localhost:5434` | `sismowatch_admin` / `sismowatch_db_pass_2026` |
+| **OpenMetadata** (sección 7.5) | [http://localhost:8585](http://localhost:8585) | `admin@open-metadata.org` / `admin` (cambiar tras el primer login) |
+
+Todas las credenciales anteriores viven en `.env` (plantilla: `.env.example`); los valores
+mostrados son los defaults de la plantilla de demostración.
 
 ### 7.4 Usuarios de demostración
 
@@ -231,6 +237,80 @@ docker compose ps
 | **Viewer** | `viewer@sismowatch.internal` | `ViewerSecure2026!*` | Dashboard, mapa, stream en vivo, reportes y lectura; los endpoints admin responden **HTTP 403** (verificado por pruebas) |
 
 El RBAC no depende de la UI: el backend valida el JWT y el rol en **cada** invocación.
+
+### 7.5 Catálogo de metadatos: OpenMetadata
+
+El proyecto integra **OpenMetadata 2.0.7** como catálogo de datos: descubre y documenta
+las tablas del Medallion (`curated.events`, `staging.*`, `raw.*`), su linaje, glosario,
+propietarios y las métricas de calidad del pipeline perfiladas como tests de datos.
+
+**Arranca junto a todo** con el mismo `docker compose up -d` de la sección 7.2. Su diseño
+de integración protege el flujo existente:
+
+| Mecanismo | Efecto |
+|---|---|
+| Stack completamente aislado | OpenMetadata trae su **propio** MySQL y Elasticsearch (volúmenes nombrados propios); no comparte BD, esquemas ni red lógica de datos con el Medallion |
+| Sin dependencias cruzadas | Ningún servicio de SismoWatch depende de OpenMetadata: los contenedores base no tocan ni esperan al catálogo |
+| Solo lectura vía conector | El descubrimiento se hace con el conector PostgreSQL usando `api_user` (mínimo privilegio, solo lectura de Gold): el conector nunca escribe ni modifica datos de negocio |
+| Degradación controlada | Si el stack de metadatos se detiene, Airflow/Spark/API/Web siguen operando 100%: el catálogo es un complemento observacional, no un eslabón del pipeline |
+
+**Acceso:**
+
+```bash
+docker compose up -d        # arranca TODO: SismoWatch + catálogo
+
+# Catálogo OpenMetadata http://localhost:8585 → admin@open-metadata.org / admin
+```
+
+> El catálogo no descubre nada por sí solo al arrancar: hay que registrar el servicio
+> PostgreSQL y lanzar su primer workflow de ingesta (pasos abajo), que se ejecuta en el
+> contenedor de ingesta `openmetadata_ingestion` incluido en el mismo compose.
+>
+> En el primer arranque, el contenedor `openmetadata_migrate` ejecuta la migración inicial
+> de la BD del catálogo (tarda ~1–2 min; sale con código 0 al terminar). Para detener todo:
+> `docker compose stop` (los volúmenes persisten).
+
+**Primer uso — registrar el Medallion (valores exactos):**
+
+En la UI (*Databases → Add New Service → PostgreSQL*):
+
+| Campo | Valor | Nota |
+|---|---|---|
+| Service Name | `sismowatch_medallion` | el nombre que quieras; este UI lo referencia después |
+| Connection Type | PostgreSQL | — |
+| Host and Port | `postgres:5432` | host es el nombre del servicio Compose, no `localhost` |
+| Database | `sismowatch_db` | |
+| Auth Configuration | **Basic Auth** | (ignora las opciones IAM/Azure del panel derecho) |
+| Username | `api_user` | rol mínimo-privilegio de solo lectura (vive en `.env`) |
+| Password | `api_secret_2026` | (vive en `.env`) |
+| Test Connection | debe responder *successful* | si falla, revisa host/credenciales |
+
+En la pantalla de ingesta de metadatos: nombre `sismowatch_medallion_metadata`,
+activa **Include Sample Data** y **Include Lineage**, luego **Deploy** y después **Run**.
+
+1. Cuando el workflow termine en **Success**, las tablas de `raw`, `staging` y `curated`
+   aparecerán catalogadas (columnas, tipos, conteos y muestra), con el grafo de linaje
+   en la pestaña **Lineage**.
+2. La ingesta se agenda diaria; refresca conteos y esquema en cada corrida.
+3. **Sample Data:** los defaults de fábrica de los agentes de AutoPilot bloquean la
+   muestra (distinguen solo tablas Tier1/Tier2 y vienen con `storeSampleData` apagado).
+   Una vez registrado el servicio, corre:
+
+   ```bash
+   python scripts/om_first_run.py
+   ```
+
+   Corrige filtros, dispara los agentes y verifica que `curated.events` quede con su
+   muestra (hasta 50 filas). Es idempotente: puedes re-correrlo cuando quieras
+   (`--service`, `--url`, `--user/--password` permiten personalizar).
+4. Opcional: registra el servicio **S3** apuntando al bucket `sismowatch-bronze` de MinIO
+   (`minio:9000`, credenciales `MINIO_ROOT_*` del `.env`) para catalogar el lakehouse, y el
+   servicio **Airflow** en `http://airflow:8080` (`admin` / `admin_sismowatch`) para ver
+   los DAGs de ingesta del proyecto.
+
+**Credenciales de demostración:** `admin@open-metadata.org / admin` — cambiarlas en
+`Settings → Users` tras el primer login si el entorno se comparte. Todas las variables
+OpenMetadata están en `.env.example` (prefijo `OPENMETADATA_`).
 
 ---
 
@@ -333,7 +413,7 @@ verifica: `3 DAGs encontrados, 0 errores de importación`.
 ## 13. Estructura del repositorio
 
 ```text
-├── docker-compose.yml           # PostgreSQL + MinIO + Airflow + API + Web (100% portable)
+├── docker-compose.yml           # PostgreSQL + MinIO + Airflow + API + Web + OpenMetadata 2.0.7 (catálogo)
 ├── .env.example                 # Plantilla de entorno (la key de IA va vacía)
 ├── requirements.txt             # Deps de pruebas/desarrollo (pytest, bandit, pip-audit…)
 ├── docs/
@@ -382,3 +462,4 @@ verifica: `3 DAGs encontrados, 0 errores de importación`.
 2. **Notificaciones push corporativas:** el `failure_alert_callback` está listo; producción lo conectaría a Slack/PagerDuty/Telegram (webhook configurable vía `ALERT_WEBHOOK_URL`).
 3. **Búsquedas semánticas geológicas:** `pgvector` sobre comentarios históricos de USGS.
 4. **Alta disponibilidad:** Airflow standalone hoy; producción usaría executor Celery/Kubernetes con réplicas de api-server.
+5. **Catálogo de metadatos en producción:** hoy OpenMetadata convive con el stack en Compose (sección 7.5); en producción se alojaría en BD gestionada (RDS MySQL) y OpenSearch gestionado, con inyección programática de los DAGs Airflow como servicio de pipeline.

@@ -9,7 +9,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY api/requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+# Instalacion resiliente a redes inestables: reintentos con timeout extendido
+# y caida a un espejo de PyPI si pypi.org falla (ej. proxy/firewall en Windows)
+RUN python -m pip install --no-cache-dir --timeout 120 --retries 3 -r requirements.txt \
+    || python -m pip install --no-cache-dir --timeout 120 --retries 3 \
+        -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 
 # Copy API and Airflow include modules for shared logic
 COPY api/ /app/api/

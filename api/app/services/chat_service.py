@@ -67,6 +67,18 @@ VISUAL_KEYWORDS = [
     "compar", "barras", "dibuj", "visual", "mejores", "más fuertes", "mas fuertes",
 ]
 
+FAREWELL_KEYWORDS = [
+    "chao", "chaito", "adiós", "adios", "hasta luego", "hasta pronto",
+    "hasta mañana", "nos vemos", "bye", "goodbye", "me voy",
+    "cuídate", "cuidate", "hasta la vista", "fin de la conversación",
+]
+
+FAREWELL_ANSWER = (
+    "¡Hasta pronto! 👋 Fue un gusto ayudarte con el monitoreo sísmico.\n\n"
+    "Recuerda que estoy disponible 24/7 para consultas de actividad sísmica "
+    "reciente, alertas de tsunami y el estado de la plataforma SismoWatch."
+)
+
 OFF_TOPIC_ANSWER = (
     "Lo siento, esa consulta está fuera de mi alcance. Solo puedo ayudarte con:\n\n"
     "1. **Actividad sísmica:** conteos, magnitudes, regiones, alertas de tsunami y anomalías.\n"
@@ -236,6 +248,12 @@ def resolve_intent(query: str) -> str:
     is_project = _is_project_query(lower)
 
     # 0. Cortesía (sin términos del dominio): NO se envía al LLM.
+    # La despedida primero: "bye" o "adiós" no deben caer en el mensaje genérico.
+    if (any(k in lower for k in FAREWELL_KEYWORDS)
+            and not is_topical and not is_project
+            and len(lower.split()) <= 8):
+        return "farewell"
+
     if (any(k in lower for k in SMALLTALK_KEYWORDS)
             and not is_topical and not is_project
             and len(lower.split()) <= 8):
@@ -399,6 +417,17 @@ def answer_user_query_grounded_in_gold(question: str) -> Dict[str, Any]:
             "answer": OFF_TOPIC_ANSWER,
             "data_points": {},
             "period_consulted": "No aplica (consulta fuera de alcance)",
+            "ai_model": "determinista",
+            "latency_ms": 0.0,
+            "is_fallback": True,
+        }
+
+    if intent == "farewell":
+        return {
+            "question": clean_q,
+            "answer": FAREWELL_ANSWER,
+            "data_points": {},
+            "period_consulted": "No aplica",
             "ai_model": "determinista",
             "latency_ms": 0.0,
             "is_fallback": True,

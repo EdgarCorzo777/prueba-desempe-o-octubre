@@ -58,6 +58,13 @@ def test_resolve_intent(query, expected):
         ("gracias", "smalltalk"),
         ("¿Quién eres?", "smalltalk"),
         ("¿Qué puedes hacer?", "smalltalk"),
+        # Despedidas: se responden de forma determinista (bug de "chao" corregido)
+        ("chao", "farewell"),
+        ("adiós", "farewell"),
+        ("adios", "farewell"),
+        ("hasta luego", "farewell"),
+        ("nos vemos mañana", "farewell"),
+        ("bye", "farewell"),
         # Fuera de alcance: se refusa sin gastar el LLM
         ("¿Quién ganó el partido de ayer?", "off_topic"),
         ("¿Cuál es la capital de Francia?", "off_topic"),
